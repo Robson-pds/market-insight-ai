@@ -1,0 +1,9 @@
+services:
+  market-insight-ai:
+    build: .
+    container_name: market-insight-ai
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped

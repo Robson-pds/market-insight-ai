@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Market Insight AI — Opções Binárias</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">◈</div>
+      <div>
+        <h1>Market Insight AI</h1>
+        <p class="tagline">Análise em tempo real para opções binárias</p>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="conn-status" id="conn-status">
+        <span class="dot"></span>
+        <span id="conn-text">Conectando…</span>
+      </div>
+      <button id="login-button" class="login-button">Login</button>
+      <div class="balance">
+        <span class="balance-label">PRACTICE</span>
+        <strong id="balance-value">—</strong>
+      </div>
+    </div>
+  </header>
+
+  <div id="login-modal" class="login-modal hidden">
+    <form id="login-form" class="login-panel">
+      <button type="button" id="login-close" class="login-close" aria-label="Fechar">×</button>
+      <span class="eyebrow">CONTA IQ OPTION</span>
+      <h2>Trocar conta</h2>
+      <p class="muted">Use a conta PRACTICE. As credenciais não serão salvas.</p>
+      <label for="login-email">Email</label>
+      <input id="login-email" type="email" required autocomplete="username" />
+      <label for="login-password">Senha</label>
+      <input id="login-password" type="password" required autocomplete="current-password" />
+      <div id="login-status" class="login-status"></div>
+      <button class="btn-primary" type="submit">Conectar</button>
+    </form>
+  </div>
+
+  <section id="strategy-gate" class="strategy-gate">
+    <div class="gate-panel">
+      <span class="eyebrow">CONFIGURAÇÃO DA ANÁLISE</span>
+      <h2>Escolha uma estratégia</h2>
+      <p>Confirme uma estratégia para rastrear os pares com as melhores condições atuais.</p>
+      <label for="gate-strategy-select">ESTRATÉGIA</label>
+      <select id="gate-strategy-select"></select>
+      <p id="gate-strategy-description" class="muted"></p>
+      <button id="confirm-strategy" class="btn-primary">Confirmar estratégia</button>
+    </div>
+  </section>
+
+  <!-- ABAS -->
+  <nav class="view-tabs hidden" id="main-navigation">
+    <button class="view-tab active" data-view="trade">📈 Análise em Tempo Real</button>
+    <button class="view-tab" data-view="radar">📡 Radar de Pares</button>
+    <button class="view-tab" data-view="news">🗓 Notícias Econômicas</button>
+  </nav>
+
+  <section id="view-opportunities" class="view hidden">
+    <div class="opportunities-header">
+      <div>
+        <span class="eyebrow">RASTREAMENTO ATIVO</span>
+        <h2 id="opportunities-title">Melhores pares</h2>
+        <p id="opportunities-description" class="muted"></p>
+      </div>
+      <button id="change-strategy" class="btn-secondary">Trocar estratégia</button>
+    </div>
+    <div id="opportunities-status" class="status loading">Analisando pares…</div>
+    <div id="opportunities-grid" class="opportunities-grid"></div>
+  </section>
+
+  <!-- ============================================================
+       ABA 1 — TRADE / ANÁLISE
+  ============================================================= -->
+  <section id="view-trade" class="view hidden">
+
+    <!-- Seleção de ativo -->
+    <div class="asset-bar">
+      <div class="asset-search-wrap">
+        <input id="asset-search" class="asset-search" type="search" placeholder="Buscar par, ex.: EURUSD" autocomplete="off" />
+        <div class="asset-list" id="asset-list"></div>
+      </div>
+      <div class="asset-actions">
+        <span class="live-dot" id="live-indicator">●</span>
+        <span class="live-text">ao vivo</span>
+      </div>
+    </div>
+
+    <!-- Grid principal -->
+    <div class="trade-grid">
+
+      <!-- Coluna do gráfico -->
+      <div class="chart-col">
+        <div class="chart-header">
+          <div class="pair-title">
+            <h2 id="chart-pair">EURUSD</h2>
+            <span class="muted small" id="chart-meta">timeframe: 5min</span>
+          </div>
+
+          <div class="timeframe-selector" id="timeframe-selector">
+            <button data-interval="60" class="tf-btn">1m</button>
+            <button data-interval="300" class="tf-btn active">5m</button>
+            <button data-interval="900" class="tf-btn">15m</button>
+          </div>
+
+          <div class="pair-price">
+            <div id="chart-price" class="price-big">—</div>
+            <div id="chart-change" class="price-change">—</div>
+          </div>
+        </div>
+
+        <div class="chart-wrap">
+          <div id="chart"></div>
+          <div class="chart-hint">🖱️ Clique no gráfico para atualizar a análise</div>
+        </div>
+      </div>
+
+      <!-- Coluna de sinais -->
+      <div class="signals-col">
+
+        <div class="active-strategy" id="active-strategy">Estratégia confirmada</div>
+
+        <div class="signal-list" id="signal-list">
+          <article class="expiry-card neutral" data-expiry-card="1min">
+            <div class="expiry-head"><span>EXPIRAÇÃO 1 MINUTO</span><span class="signal-lock" id="lock-1min"></span></div>
+            <div class="expiry-main"><span class="expiry-signal" id="signal-1min">AGUARDAR</span><span class="expiry-timer" id="timer-1min">--:--</span></div>
+            <p id="reason-1min">Aguardando análise.</p>
+          </article>
+          <article class="expiry-card neutral" data-expiry-card="5min">
+            <div class="expiry-head"><span>EXPIRAÇÃO 5 MINUTOS</span><span class="signal-lock" id="lock-5min"></span></div>
+            <div class="expiry-main"><span class="expiry-signal" id="signal-5min">AGUARDAR</span><span class="expiry-timer" id="timer-5min">--:--</span></div>
+            <p id="reason-5min">Aguardando análise.</p>
+          </article>
+          <article class="expiry-card neutral" data-expiry-card="15min">
+            <div class="expiry-head"><span>EXPIRAÇÃO 15 MINUTOS</span><span class="signal-lock" id="lock-15min"></span></div>
+            <div class="expiry-main"><span class="expiry-signal" id="signal-15min">AGUARDAR</span><span class="expiry-timer" id="timer-15min">--:--</span></div>
+            <p id="reason-15min">Aguardando análise.</p>
+          </article>
+        </div>
+
+        <div class="analysis-note" id="analysis-note">O sinal só muda quando o prazo correspondente expirar.</div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ABA 2 — RADAR
+  ============================================================= -->
+  <section id="view-radar" class="view hidden">
+    <div class="radar-header">
+      <div>
+        <h2>📡 Radar de Pares</h2>
+        <p class="muted">Varre todos os pares e ranqueia pela confiança no timeframe de 5 min.</p>
+      </div>
+      <div class="radar-actions">
+        <label for="radar-strategy-select">ESTRATÉGIA</label>
+        <select id="radar-strategy-select"></select>
+        <button id="btn-radar" class="btn-primary">🔍 Rastrear Pares</button>
+      </div>
+    </div>
+
+    <div id="radar-status" class="status hidden"></div>
+
+    <div id="radar-output" class="hidden">
+            <div class="radar-summary">
+        <div class="summary-card call"><span>CALL (1m)</span><strong id="sum-call">0</strong></div>
+        <div class="summary-card neutral"><span>Neutro (1m)</span><strong id="sum-neu">0</strong></div>
+        <div class="summary-card put"><span>PUT (1m)</span><strong id="sum-put">0</strong></div>
+      </div>
+
+      <div class="card">
+        <div class="table-header">
+          <h3>Ranking</h3>
+          <span id="radar-meta" class="muted small"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="radar-table">
+            <thead>
+               <tr>
+                <th>#</th>
+                <th>Par</th>
+                <th>1 min</th>
+                <th>5 min</th>
+                <th>15 min</th>
+              </tr>
+            </thead>
+            <tbody id="radar-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-news" class="view hidden">
+    <div class="news-header">
+      <div>
+        <span class="eyebrow">BIQUOTE · CALENDÁRIO ECONÔMICO</span>
+        <h2>Notícias que podem mover o mercado</h2>
+        <p id="news-meta" class="muted">Carregando eventos…</p>
+      </div>
+      <div class="news-filters">
+        <select id="news-importance" aria-label="Filtrar impacto">
+          <option value="all">Todos os impactos</option>
+          <option value="high">Alto impacto</option>
+          <option value="medium">Impacto médio</option>
+          <option value="low">Baixo impacto</option>
+        </select>
+        <button id="btn-news-refresh" class="btn-secondary">Atualizar</button>
+      </div>
+    </div>
+    <div id="news-status" class="status loading">Consultando Biquote…</div>
+    <div id="news-list" class="news-list"></div>
+  </section>
+
+  <footer class="disclaimer">
+    <strong>Aviso legal:</strong> Ferramenta <em>educacional</em>. Não é recomendação de investimento.
+    Opções binárias são produtos de alto risco com possibilidade de perda total. Use apenas em conta
+    <strong>PRACTICE</strong>. Nenhum indicador garante resultado.
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

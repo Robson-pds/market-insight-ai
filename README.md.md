@@ -92,36 +92,37 @@ Acesse **http://localhost:8000**.
 
 ## Rodando na Vercel (serverless)
 
-O projeto funciona na Vercel com **degradação automática**: o back-end
-detecta o ambiente serverless (variável `VERCEL`) e:
+O projeto funciona na Vercel com **degradação automática** do que exige
+processo persistente:
 
-- usa SQLite em local gravável: diretório do projeto (uso local) →
+- **SQLite** com fallback de local: diretório do projeto (uso local) →
   `/tmp/market.db` → memória (efêmero por instância). Definir
-  `MARKET_DB_PATH` força um caminho;
-- não inicia o worker de apuração em background (não existe processo
-  persistente no serverless);
-- desativa a conexão IQ Option (`/api/connect` e rotas de análise retornam
-  503 com mensagem clara).
+  `MARKET_DB_PATH` força um caminho — foi esse arquivo em diretório
+  somente-leitura que causava o `500 FUNCTION_INVOCATION_FAILED`;
+- **Conexão IQ Option continua ativa** (candles/valor/análise em tempo real
+  funcionam, como já funcionavam);
+- o worker de apuração em background **não roda** no serverless (não há
+  processo persistente) — entradas executadas ficam ABERTA até você clicar
+  em "Apurar".
 
 **Passos:**
 
 1. No dashboard da Vercel, importe o repositório (Framework Preset:
    `Other`/`Python` — o entrypoint `main:app` é detectado automaticamente).
-2. Em **Settings → Environment Variables**, adicione pelo menos
-   `IQ_EMAIL` e `IQ_PASSWORD` se quiser tentar a conexão (recomendado manter
-   apenas para testes) — ou deixe vazias para a UI administrativa funcionar.
+2. Em **Settings → Environment Variables**, adicione `IQ_EMAIL` e
+   `IQ_PASSWORD` (e `OPENAI_API_KEY` se quiser a IA) — esses são os "env"
+   usados em produção, enquanto o `.env` local é usado apenas localmente.
 3. Deploy.
 
 **Limitações do ambiente serverless:**
 
-- O histórico de entradas/configurações **não persiste** entre requisições
-  (arquivo efêmero). Para persistência na nuvem, a evolução é usar um banco
-  externo (ex.: Postgres/Supabase) — `trade_manager` foi isolado para
+- O histórico de entradas/configurações **não persiste** entre invocações
+  frias (arquivo efêmero). Para persistência na nuvem, a evolução é usar um
+  banco externo (ex.: Postgres/Supabase) — `trade_manager` foi isolado para
   facilitar essa troca.
-- Streaming em tempo real e execução de ordens dependem de conexão WebSocket
-  persistente com a IQ Option — isso **só funciona rodando local**.
-- Rotas que dependem da IQ Option (`/api/analyze/*`, `/api/candles/*`,
-  `/api/radar`, `/api/ai/analise`) retornam 503 em produção.
+- Execução de ordens e apuração automática dependem de processo/thread
+  persistente — **confiável apenas rodando local**. Na Vercel, use as
+  entradas mais como registro/relatório e clique em "Apurar" manualmente.
 
 ## Configuração (`.env`)
 

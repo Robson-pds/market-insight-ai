@@ -7,14 +7,10 @@ from fastapi.staticfiles import StaticFiles
 import iq_service
 import analysis
 import news_service
-import trade_manager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Inicializa o módulo de entradas (config + worker de apuração) antes do
-    # connect, para que a conta configurada seja aplicada na conexão.
-    trade_manager.iniciar()
     # Tenta conectar à IQ Option na inicialização
     print("[startup] Conectando à IQ Option...")
     ok, msg = iq_service.connect()
@@ -201,118 +197,3 @@ def radar(strategy: str = "trend_pullback"):
             continue
     results.sort(key=lambda x: x["score"], reverse=True)
     return {"pairs": results}
-
-
-# ===========================================================================
-# Entradas (configuração, histórico, execução e relatório)
-# ===========================================================================
-class TradeConfigRequest(BaseModel):
-    conta: str | None = None
-    valor_entrada: float | None = None
-    valor_max_perda: float | None = None
-    estrategia: str | None = None
-    soros_nivel: int | None = None
-
-
-class NovaEntradaRequest(BaseModel):
-    ativo: str
-    direcao: str
-    expiracao: int = 1
-    valor: float | None = None
-    executar: bool = False
-    origem: str | None = None
-    observacao: str | None = None
-
-
-class EditarEntradaRequest(BaseModel):
-    status: str | None = None
-    resultado: float | None = None
-    observacao: str | None = None
-
-
-@app.get("/api/trade/config")
-def trade_config():
-    try:
-        return trade_manager.get_estado_completo()
-    except Exception as exc:
-        raise HTTPException(500, f"Erro ao carregar configurações: {exc}")
-
-
-@app.put("/api/trade/config")
-def trade_config_salvar(request: TradeConfigRequest):
-    ok, msg = trade_manager.set_config(request.model_dump(exclude_none=True))
-    if not ok:
-        raise HTTPException(400, msg)
-    return {"ok": True, "message": msg, **trade_manager.get_estado_completo()}
-
-
-@app.get("/api/trade/entradas")
-def trade_entradas(periodo: str = "dia"):
-    try:
-        return {"periodo": periodo, "entradas": trade_manager.listar_entradas(periodo)}
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    except Exception as exc:
-        raise HTTPException(500, f"Erro ao listar entradas: {exc}")
-
-
-@app.post("/api/trade/entradas")
-def trade_nova_entrada(request: NovaEntradaRequest):
-    ok, retorno = trade_manager.criar_entrada(
-        ativo=request.ativo,
-        direcao=request.direcao,
-        expiracao=request.expiracao,
-        valor=request.valor,
-        executar=request.executar,
-        origem=request.origem,
-        observacao=request.observacao,
-    )
-    if not ok:
-        raise HTTPException(400, retorno)
-    return {"ok": True, "entrada": retorno, **trade_manager.get_estado_completo()}
-
-
-@app.patch("/api/trade/entradas/{entrada_id}")
-def trade_editar_entrada(entrada_id: int, request: EditarEntradaRequest):
-    ok, retorno = trade_manager.editar_entrada(
-        entrada_id,
-        request.model_dump(exclude_none=True),
-    )
-    if not ok:
-        raise HTTPException(400, retorno)
-    return {"ok": True, "entrada": retorno, **trade_manager.get_estado_completo()}
-
-
-@app.delete("/api/trade/entradas/{entrada_id}")
-def trade_excluir_entrada(entrada_id: int):
-    ok, msg = trade_manager.excluir_entrada(entrada_id)
-    if not ok:
-        raise HTTPException(400, msg)
-    return {"ok": True, "message": msg, **trade_manager.get_estado_completo()}
-
-
-@app.post("/api/trade/entradas/{entrada_id}/apurar")
-def trade_apurar_entrada(entrada_id: int):
-    """Dispara a apuração do resultado na IQ Option (best-effort)."""
-    entrada = trade_manager.buscar_entrada(entrada_id)
-    if entrada is None:
-        raise HTTPException(404, "Entrada não encontrada.")
-    if entrada["status"] != "ABERTA":
-        return {"ok": True, "message": "Entrada já fechada.", "estado": trade_manager.get_estado_completo()}
-    if not entrada["ordem_id"]:
-        raise HTTPException(400, "Entrada manual: marque o resultado manualmente.")
-    if not iq_service.is_connected():
-        raise HTTPException(400, "Não conectado à IQ Option.")
-    import threading
-    threading.Thread(target=trade_manager.apurar_entrada, args=(entrada_id,), daemon=True).start()
-    return {"ok": True, "message": "Apuração iniciada.", "estado": trade_manager.get_estado_completo()}
-
-
-@app.get("/api/trade/relatorio")
-def trade_relatorio(periodo: str = "dia"):
-    try:
-        return trade_manager.relatorio(periodo)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    except Exception as exc:
-        raise HTTPException(500, f"Erro no relatório: {exc}")

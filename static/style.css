@@ -156,8 +156,9 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 .opportunity-card:hover { border-color: var(--blue); }
 .opportunity-rank { color: var(--muted); font-size: 11px; }
 .opportunity-pair { margin: 8px 0; font-size: 22px; font-weight: 800; }
-.opportunity-score { color: var(--cyan); font-weight: 800; }
-.opportunity-score span { color: var(--muted); font-size: 11px; font-weight: 500; }
+.opportunity-score { display: flex; flex-direction: column; gap: 3px; }
+.opportunity-score span { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+.opportunity-score strong { color: var(--cyan); font-size: 14px; }
 .opportunity-signals { display: flex; gap: 5px; margin: 14px 0 10px; }
 .mini-signal { padding: 4px 6px; border-radius: 4px; font-size: 10px; }
 .mini-signal.call { color: var(--green); background: rgba(38,222,129,.1); }
@@ -227,7 +228,7 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
   gap: 18px;
 }
 @media (max-width: 1100px) {
-  .trade-grid { grid-template-columns: 1fr; }
+  .trade-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---- CHART COL ---- */
@@ -235,12 +236,12 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 14px; padding: 18px 20px;
   display: flex; flex-direction: column; gap: 12px;
-  min-height: 560px;
+  min-width: 0; min-height: 560px;
 }
 
 .chart-header {
   display: flex; justify-content: space-between; align-items: flex-start;
-  gap: 12px;
+  gap: 12px; flex-wrap: wrap;
 }
 .pair-title h2 { margin: 0; font-size: 22px; letter-spacing: 0.5px; }
 .pair-title .muted { display: block; margin-top: 4px; }
@@ -305,6 +306,8 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 .signal-lock { font-size: 9px; color: var(--muted); }
 .expiry-main { margin: 12px 0 6px; }
 .expiry-signal { font-size: 25px; font-weight: 850; letter-spacing: 1px; }
+.expiry-card.attention .expiry-signal { font-size: 22px; }
+.expiry-card.near .expiry-signal { max-width: 70%; font-size: 16px; line-height: 1.15; }
 .expiry-card.call .expiry-signal { color: var(--green); }
 .expiry-card.put .expiry-signal { color: var(--red); }
 .expiry-card.neutral .expiry-signal { color: var(--amber); }
@@ -504,6 +507,14 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
   text-transform: uppercase; color: var(--muted);
   border-bottom: 1px solid var(--border); font-weight: 600;
 }
+.radar-sort {
+  padding: 5px 8px; border: 1px solid transparent; border-radius: 6px;
+  background: transparent; color: inherit; font: inherit; text-transform: inherit;
+  cursor: pointer;
+}
+.radar-sort:hover { color: var(--text); border-color: var(--border); }
+.radar-sort.active { color: var(--cyan); border-color: rgba(56,189,248,0.35); background: rgba(56,189,248,0.08); }
+.radar-sort.active::after { content: " ↓"; }
 .radar-table tbody td {
   padding: 12px 10px; border-bottom: 1px dashed var(--border);
   white-space: nowrap; font-variant-numeric: tabular-nums;
@@ -511,8 +522,9 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 .radar-table tbody tr:last-child td { border-bottom: none; }
 .radar-row { cursor: pointer; transition: background 0.15s; }
 .radar-row:hover { background: rgba(74,158,255,0.06); }
-.radar-table .rank { color: var(--muted); width: 34px; }
 .radar-table .pair { font-weight: 700; letter-spacing: 0.3px; }
+.radar-table .pair small { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--red); font-size: 9px; font-weight: 500; }
+.radar-row.loading { opacity: 0.72; }
 
 .tf-badge {
   display: inline-flex; align-items: center; gap: 5px;
@@ -527,6 +539,24 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 .tf-badge.call    { color: var(--green); background: rgba(38,222,129,0.1);  border-color: rgba(38,222,129,0.4); }
 .tf-badge.put     { color: var(--red);   background: rgba(255,92,92,0.1);   border-color: rgba(255,92,92,0.4); }
 .tf-badge.neutral { color: var(--muted); background: rgba(132,151,176,0.08); border-color: rgba(132,151,176,0.25); }
+.tf-badge.analyzing { min-width: 104px; justify-content: center; color: var(--cyan); background: rgba(56,189,248,0.08); border-color: rgba(56,189,248,0.3); }
+
+.glossary {
+  max-width: 1600px; margin: 34px 28px 0; padding: 28px 0;
+  border-top: 1px solid var(--border);
+}
+.glossary-heading { max-width: 720px; margin-bottom: 22px; }
+.glossary-heading h2 { margin: 7px 0 6px; font-size: 22px; }
+.glossary-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.glossary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 24px; margin: 0; }
+.glossary-grid > div { padding: 14px 0; border-bottom: 1px dashed var(--border); }
+.glossary-grid dt { color: var(--text); font-size: 12px; font-weight: 800; }
+.glossary-grid dd { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+@media (max-width: 1050px) { .glossary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 620px) {
+  .glossary { margin-left: 20px; margin-right: 20px; }
+  .glossary-grid { grid-template-columns: 1fr; }
+}
 
 /* ============================================================
    MISC

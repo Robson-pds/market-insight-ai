@@ -161,12 +161,12 @@
     <div class="radar-header">
       <div>
         <h2>📡 Radar de Pares</h2>
-        <p class="muted">Varre todos os pares e ranqueia pela confiança no timeframe de 5 min.</p>
+        <p class="muted">Os pares permanecem visíveis e são atualizados durante a análise. Selecione um prazo para ordenar pela assertividade histórica.</p>
       </div>
       <div class="radar-actions">
         <label for="radar-strategy-select">ESTRATÉGIA</label>
         <select id="radar-strategy-select"></select>
-        <button id="btn-radar" class="btn-primary">🔍 Rastrear Pares</button>
+        <button id="btn-radar" class="btn-primary">Atualizar pares</button>
       </div>
     </div>
 
@@ -174,9 +174,9 @@
 
     <div id="radar-output" class="hidden">
             <div class="radar-summary">
-        <div class="summary-card call"><span>CALL (1m)</span><strong id="sum-call">0</strong></div>
-        <div class="summary-card neutral"><span>Neutro (1m)</span><strong id="sum-neu">0</strong></div>
-        <div class="summary-card put"><span>PUT (1m)</span><strong id="sum-put">0</strong></div>
+        <div class="summary-card call"><span id="sum-call-label">CALL (1 min)</span><strong id="sum-call">0</strong></div>
+        <div class="summary-card neutral"><span id="sum-neutral-label">AGUARDAR (1 min)</span><strong id="sum-neu">0</strong></div>
+        <div class="summary-card put"><span id="sum-put-label">PUT (1 min)</span><strong id="sum-put">0</strong></div>
       </div>
 
       <div class="card">
@@ -188,11 +188,10 @@
           <table class="radar-table">
             <thead>
                <tr>
-                <th>#</th>
                 <th>Par</th>
-                <th>1 min</th>
-                <th>5 min</th>
-                <th>15 min</th>
+                <th><button class="radar-sort active" data-radar-sort="1min" aria-sort="descending">1 minuto</button></th>
+                <th><button class="radar-sort" data-radar-sort="5min" aria-sort="none">5 minutos</button></th>
+                <th><button class="radar-sort" data-radar-sort="15min" aria-sort="none">15 minutos</button></th>
               </tr>
             </thead>
             <tbody id="radar-body"></tbody>
@@ -221,6 +220,32 @@
     </div>
     <div id="news-status" class="status loading">Consultando Biquote…</div>
     <div id="news-list" class="news-list"></div>
+  </section>
+
+  <section class="glossary" aria-labelledby="glossary-title">
+    <div class="glossary-heading">
+      <span class="eyebrow">COMO INTERPRETAR</span>
+      <h2 id="glossary-title">Glossário da análise</h2>
+      <p>Definições dos estados, métricas e expressões utilizadas pela plataforma.</p>
+    </div>
+    <dl class="glossary-grid">
+      <div><dt>CALL</dt><dd>Sinal direcional de alta: a estratégia encontrou critérios suficientes para estimar fechamento acima do preço de entrada na expiração indicada.</dd></div>
+      <div><dt>PUT</dt><dd>Sinal direcional de baixa: a estratégia encontrou critérios suficientes para estimar fechamento abaixo do preço de entrada na expiração indicada.</dd></div>
+      <div><dt>AGUARDAR</dt><dd>Não há evidências técnicas suficientes. Não representa CALL nem PUT e indica que uma entrada deve ser evitada naquele momento.</dd></div>
+      <div><dt>ATENÇÃO</dt><dd>Parte dos critérios está presente, mas o gatilho ainda é incompleto. É um aviso de proximidade, não uma recomendação de entrada.</dd></div>
+      <div><dt>SINAL MUITO PRÓXIMO</dt><dd>A maioria dos critérios foi encontrada, porém ainda não existe confirmação direcional completa. Aguarde CALL ou PUT.</dd></div>
+      <div><dt>Confluência técnica: 10 de 12</dt><dd>Dez critérios técnicos foram atendidos entre doze possíveis nos três prazos. Também pode aparecer abreviado como 10/12. Não é percentual nem quantidade de operações vencedoras.</dd></div>
+      <div><dt>Estimativa histórica: 49,1% (114 casos)</dt><dd>Nos 114 sinais anteriores comparáveis, 49,1% acertaram a direção do candle seguinte. É uma medição retrospectiva e não garante o próximo resultado.</dd></div>
+      <div><dt>Sem amostra suficiente</dt><dd>Foram encontrados menos de 20 casos históricos comparáveis, portanto a plataforma não publica um percentual potencialmente enganoso.</dd></div>
+      <div><dt>Retração confirmada</dt><dd>O preço corrigiu em direção à EMA20 dentro de uma tendência identificada, com confirmação pelos demais critérios da estratégia.</dd></div>
+      <div><dt>Retração sem confirmação</dt><dd>Há indício de correção, mas tendência, distância da média, RSI ou candle de confirmação ainda não atendem ao conjunto mínimo.</dd></div>
+      <div><dt>Rompimento confirmado</dt><dd>O fechamento superou a faixa recente e foi acompanhado por expansão de volatilidade e candle direcional.</dd></div>
+      <div><dt>Reversão à média</dt><dd>Busca retorno do preço após afastamento extremo das Bandas de Bollinger, combinado com confirmação do RSI.</dd></div>
+      <div><dt>Rejeição em suporte ou resistência</dt><dd>O preço testou uma zona extrema recente e formou pavio e candle compatíveis com rejeição daquela região.</dd></div>
+      <div><dt>Momentum alinhado</dt><dd>EMA9/EMA21, MACD, ADX e RSI apontam força suficiente na mesma direção.</dd></div>
+      <div><dt>Expiração e contador</dt><dd>Indicam o prazo do resultado e o tempo até o fechamento correspondente. O sinal é recalculado quando um novo ciclo começa.</dd></div>
+      <div><dt>Sinal fixado / Atualizando</dt><dd>“Fixado” mantém o sinal até a expiração atual. “Atualizando” informa que o novo candle está sendo processado.</dd></div>
+    </dl>
   </section>
 
   <footer class="disclaimer">

@@ -76,6 +76,50 @@ def news(hours: int = 24, importance: str = "all"):
     return news_service.get_calendar_events(min(max(hours, 1), 168), importance)
 
 
+def _analyze_opportunity(asset: str, strategy: str) -> dict:
+    result = analysis.analyze_asset(asset, strategy)
+    one_minute = result["signals"]["1min"]
+    five_minutes = result["signals"]["5min"]
+    fifteen_minutes = result["signals"]["15min"]
+    timeframe_signals = {
+        "1min": one_minute,
+        "5min": five_minutes,
+        "15min": fifteen_minutes,
+    }
+    score = sum(item["score"] for item in timeframe_signals.values())
+    directions = [item["signal"] for item in timeframe_signals.values()]
+    directional = [direction for direction in directions if direction in ("CALL", "PUT")]
+    consensus_count = max(directional.count("CALL"), directional.count("PUT"))
+    conflict_count = len(directional) - consensus_count
+    return {
+        "asset": asset,
+        "score": score,
+        "max_score": analysis.STRATEGIES[strategy]["max_score"] * 3,
+        "consensus_count": consensus_count,
+        "conflict_count": conflict_count,
+        "news_blocked": result["news"]["blocked"],
+        "signals": {key: item["signal"] for key, item in timeframe_signals.items()},
+        "scores": {key: item["score"] for key, item in timeframe_signals.items()},
+        "reason": one_minute["reason"],
+        "proximity": {key: item.get("proximity") for key, item in timeframe_signals.items()},
+        "accuracy": {key: item.get("historical_accuracy") for key, item in timeframe_signals.items()},
+    }
+
+
+@app.get("/api/opportunity/{asset}")
+def opportunity(asset: str, strategy: str = "trend_pullback"):
+    _ensure_connected()
+    if strategy not in analysis.STRATEGIES:
+        raise HTTPException(400, f"Estratégia desconhecida: {strategy}")
+    normalized_asset = asset.upper().replace("=X", "")
+    if normalized_asset not in iq_service.list_assets():
+        raise HTTPException(404, f"Ativo desconhecido: {normalized_asset}")
+    try:
+        return _analyze_opportunity(normalized_asset, strategy)
+    except Exception as exc:
+        raise HTTPException(500, f"Erro na análise de {normalized_asset}: {exc}")
+
+
 @app.get("/api/opportunities")
 def opportunities(strategy: str = "trend_pullback"):
     _ensure_connected()
@@ -83,37 +127,19 @@ def opportunities(strategy: str = "trend_pullback"):
         raise HTTPException(400, f"Estratégia desconhecida: {strategy}")
     def analyze_pair(asset: str) -> dict:
         try:
-            result = analysis.analyze_asset(asset, strategy)
-            one_minute = result["signals"]["1min"]
-            five_minutes = result["signals"]["5min"]
-            fifteen_minutes = result["signals"]["15min"]
-            score = one_minute["score"] + five_minutes["score"] + fifteen_minutes["score"]
-            return {
-                "asset": asset,
-                "score": score,
-                "news_blocked": result["news"]["blocked"],
-                "signals": {
-                    "1min": one_minute["signal"],
-                    "5min": five_minutes["signal"],
-                    "15min": fifteen_minutes["signal"],
-                },
-                "reason": one_minute["reason"],
-                "proximity": {
-                    "1min": one_minute.get("proximity"),
-                    "5min": five_minutes.get("proximity"),
-                    "15min": fifteen_minutes.get("proximity"),
-                },
-                "accuracy": {
-                    "1min": one_minute.get("historical_accuracy"),
-                    "5min": five_minutes.get("historical_accuracy"),
-                    "15min": fifteen_minutes.get("historical_accuracy"),
-                },
-            }
+            return _analyze_opportunity(asset, strategy)
         except Exception as exc:
             return {"asset": asset, "score": 0, "signals": {}, "reason": str(exc)}
 
     pairs = [analyze_pair(asset) for asset in iq_service.list_assets()]
-    pairs.sort(key=lambda item: item["score"], reverse=True)
+    pairs.sort(
+        key=lambda item: (
+            item.get("consensus_count", 0),
+            -item.get("conflict_count", 3),
+            item["score"],
+        ),
+        reverse=True,
+    )
     return {"strategy": strategy, "strategy_name": analysis.STRATEGIES[strategy]["name"], "pairs": pairs}
 
 

@@ -21,6 +21,11 @@ let opportunitiesTimer = null;
 let analysisRefreshInFlight = false;
 const handledExpiries = new Set();
 const expiryTimeouts = {};
+const signalExpiries = {};
+const expirySeconds = { "1min": 60, "5min": 300, "15min": 900 };
+const radarPairs = new Map();
+let radarSortExpiry = "1min";
+let radarRunId = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -56,6 +61,12 @@ $("asset-search").addEventListener("input", (event) => renderAssets(event.target
 $("radar-strategy-select").addEventListener("change", (event) => {
   selectedStrategy = event.target.value;
   runRadar();
+});
+document.querySelectorAll(".radar-sort").forEach((button) => {
+  button.addEventListener("click", () => {
+    radarSortExpiry = button.dataset.radarSort;
+    renderRadar({ pairs: Array.from(radarPairs.values()) });
+  });
 });
 $("news-importance").addEventListener("change", loadNews);
 $("btn-news-refresh").addEventListener("click", loadNews);
@@ -101,6 +112,11 @@ async function boot() {
   refreshTimer = setInterval(loadChart, 3000);
   setInterval(loadBalance, 20000);
   setInterval(ensureConnected, 60000);
+
+  // Relogio sempre ativo e independente da analise, para nunca congelar.
+  if (signalTimer) clearInterval(signalTimer);
+  signalTimer = setInterval(updateTimers, 250);
+  document.addEventListener("visibilitychange", updateTimers);
 }
 
 async function loadStrategies() {
@@ -169,11 +185,11 @@ function renderOpportunities(pairs) {
     card.innerHTML = `
       <div class="opportunity-rank">#${index + 1}</div>
       <div class="opportunity-pair">${escapeHtml(pair.asset)}</div>
-      <div class="opportunity-score">${pair.score}/12 <span>força</span></div>
+      <div class="opportunity-score"><span>Confluência técnica</span><strong>${pair.score} de ${pair.max_score || 12} critérios</strong></div>
       <div class="opportunity-signals">
-        <span>${signalBadge(pair.signals?.["1min"], "1m")}</span>
-        <span>${signalBadge(pair.signals?.["5min"], "5m")}</span>
-        <span>${signalBadge(pair.signals?.["15min"], "15m")}</span>
+        <span>${signalBadge(pair.signals?.["1min"], "1m", pair.proximity?.["1min"])}</span>
+        <span>${signalBadge(pair.signals?.["5min"], "5m", pair.proximity?.["5min"])}</span>
+        <span>${signalBadge(pair.signals?.["15min"], "15m", pair.proximity?.["15min"])}</span>
       </div>
       <p>${escapeHtml(pair.reason || "Sem confirmação suficiente.")}</p>
       <button class="btn-secondary">Abrir análise</button>
@@ -188,17 +204,17 @@ function renderOpportunities(pairs) {
   });
 }
 
-function signalBadge(signal, label) {
+function signalBadge(signal, label, proximity) {
   const safe = signal || "AGUARDAR";
   const cls = safe === "CALL" ? "call" : safe === "PUT" ? "put" : "neutral";
-  return `<b class="mini-signal ${cls}">${label} ${safe}</b>`;
+  const displayStatus = safe === "CALL" || safe === "PUT" ? safe : (proximity?.label || "AGUARDAR");
+  return `<b class="mini-signal ${cls}">${label} ${escapeHtml(displayStatus)}</b>`;
 }
 
 async function ensureConnected() {
   try {
     const r = await fetch("/api/connect");
     const d = await r.json();
-    window.latestAnalysis = d;
     const el = $("conn-status");
     if (d.ok) {
       el.classList.remove("err");
@@ -428,34 +444,66 @@ function renderAnalysis(d, highlight = false) {
   scheduleSignalRefresh(d);
 }
 
+/**
+ * Formata segundos restantes em MM:SS.
+ */
+function formatCountdown(seconds) {
+  const safe = Math.max(0, Math.floor(seconds || 0));
+  const minutes = Math.floor(safe / 60).toString().padStart(2, "0");
+  const secs = (safe % 60).toString().padStart(2, "0");
+  return `${minutes}:${secs}`;
+}
+
 function renderSignal(expiry, signal) {
   const card = document.querySelector(`[data-expiry-card="${expiry}"]`);
   const direction = signal.signal || "AGUARDAR";
-  card.className = `expiry-card ${direction === "CALL" ? "call" : direction === "PUT" ? "put" : "neutral"}`;
-  $( `signal-${expiry}` ).textContent = direction;
+  const proximity = signal.proximity?.label || "AGUARDAR";
+  const displayStatus = direction === "CALL" || direction === "PUT" ? direction : proximity;
+  const statusClass = displayStatus === "ATENÇÃO" ? "attention" : displayStatus === "SINAL MUITO PRÓXIMO" ? "near" : "";
+  card.className = `expiry-card ${direction === "CALL" ? "call" : direction === "PUT" ? "put" : "neutral"} ${statusClass}`.trim();
+  $( `signal-${expiry}` ).textContent = displayStatus;
   const accuracy = signal.historical_accuracy;
   const accuracyText = accuracy && accuracy.rate !== null
     ? `Estimativa histórica: ${accuracy.rate.toFixed(1)}% (${accuracy.sample_size} casos)`
     : "Estimativa histórica: sem amostra suficiente";
-  const proximity = signal.proximity?.label || "AGUARDAR";
-  $( `reason-${expiry}` ).textContent = `${proximity} · ${signal.reason || "Sem confirmação suficiente."} ${accuracyText}`;
+  $( `reason-${expiry}` ).textContent = `${signal.reason || "Sem confirmação suficiente."} ${accuracyText}`;
   $( `lock-${expiry}` ).textContent = signal.locked ? "SINAL FIXADO" : "NOVO SINAL";
   card.dataset.expiresAt = signal.expires_at || "";
+  const expiresAt = Number(signal.expires_at);
+  if (Number.isFinite(expiresAt) && expiresAt > 0) signalExpiries[expiry] = expiresAt;
 }
 
 function updateTimers(data) {
-  if (!data || !data.signals) return;
-  Object.entries(data.signals).forEach(([expiry, signal]) => {
-    const remaining = Math.max(0, (Number(signal.expires_at) || 0) - Math.floor(Date.now() / 1000));
-    const minutes = Math.floor(remaining / 60).toString().padStart(2, "0");
-    const seconds = (remaining % 60).toString().padStart(2, "0");
-    $(`timer-${expiry}`).textContent = `${minutes}:${seconds}`;
+  if (data && data.signals) {
+    Object.entries(data.signals).forEach(([expiry, signal]) => {
+      const expiresAt = Number(signal && signal.expires_at);
+      if (Number.isFinite(expiresAt) && expiresAt > 0) signalExpiries[expiry] = expiresAt;
+    });
+  }
 
-    const expiryKey = `${expiry}:${signal.expires_at}`;
-    if (remaining === 0 && !handledExpiries.has(expiryKey)) {
-      handledExpiries.add(expiryKey);
-      refreshAnalysisAfterExpiry();
+  Object.entries(signalExpiries).forEach(([expiry, storedExpiresAt]) => {
+    const timerEl = $(`timer-${expiry}`);
+    const interval = expirySeconds[expiry];
+    if (!timerEl || !interval) return;
+
+    const now = Date.now() / 1000;
+    let expiresAt = Number(storedExpiresAt);
+    if (expiresAt <= now) {
+      const expiredAt = expiresAt;
+      const elapsedCycles = Math.floor((now - expiresAt) / interval) + 1;
+      expiresAt += elapsedCycles * interval;
+      signalExpiries[expiry] = expiresAt;
+
+      const expiryKey = `${expiry}:${expiredAt}`;
+      if (!handledExpiries.has(expiryKey)) {
+        handledExpiries.add(expiryKey);
+        const lock = $(`lock-${expiry}`);
+        if (lock) lock.textContent = "ATUALIZANDO";
+        refreshAnalysisAfterExpiry();
+      }
     }
+
+    timerEl.textContent = formatCountdown(Math.ceil(expiresAt - now));
   });
 }
 
@@ -610,28 +658,60 @@ function renderIndicators(context, trigger) {
    Radar
 ============================================================ */
 async function runRadar() {
+  const runId = ++radarRunId;
+  const strategy = selectedStrategy;
   const btn = $("btn-radar");
   btn.disabled = true;
-  btn.textContent = "🛰️ Rastreando...";
-  showRadarStatus("loading", "Analisando contexto + gatilho de cada par. Isso pode levar 40–90 segundos.");
-  $("radar-output").classList.add("hidden");
+  btn.textContent = "Atualizando...";
+  const assets = window.availableAssets || [];
+  assets.forEach((asset) => {
+    const previous = radarPairs.get(asset) || { asset, signals: {}, scores: {}, accuracy: {} };
+    radarPairs.set(asset, { ...previous, loading: true, error: null });
+  });
+  $("radar-output").classList.remove("hidden");
+  $("radar-output").dataset.loaded = "true";
+  renderRadar({ pairs: Array.from(radarPairs.values()) });
+  showRadarStatus("loading", `Analisando 0 de ${assets.length} pares...`);
 
   try {
-    const r = await fetch(`/api/opportunities?strategy=${encodeURIComponent(selectedStrategy)}`);
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({ detail: "Erro desconhecido" }));
-      throw new Error(err.detail || "Falha no radar");
+    let nextIndex = 0;
+    let completed = 0;
+    const analyzeNext = async () => {
+      while (nextIndex < assets.length && runId === radarRunId) {
+        const asset = assets[nextIndex++];
+        try {
+          const response = await fetch(`/api/opportunity/${encodeURIComponent(asset)}?strategy=${encodeURIComponent(strategy)}`);
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || `Falha ao analisar ${asset}`);
+          }
+          const pair = await response.json();
+          if (runId !== radarRunId) return;
+          radarPairs.set(asset, { ...pair, loading: false, error: null });
+        } catch (error) {
+          if (runId !== radarRunId) return;
+          const previous = radarPairs.get(asset) || { asset, signals: {}, scores: {}, accuracy: {} };
+          radarPairs.set(asset, { ...previous, loading: false, error: error.message });
+        }
+        if (runId !== radarRunId) return;
+        completed += 1;
+        renderRadar({ pairs: Array.from(radarPairs.values()) });
+        showRadarStatus("loading", `Analisando ${completed} de ${assets.length} pares...`);
+      }
+    };
+
+    const workers = Array.from({ length: Math.min(3, assets.length) }, analyzeNext);
+    await Promise.all(workers);
+    if (runId === radarRunId) {
+      hideRadarStatus();
     }
-    const d = await r.json();
-    renderRadar(d);
-    $("radar-output").classList.remove("hidden");
-    $("radar-output").dataset.loaded = "true";
-    hideRadarStatus();
   } catch (e) {
     showRadarStatus("error", `Erro: ${e.message}`);
   } finally {
-    btn.disabled = false;
-    btn.textContent = "🔍 Rastrear Pares";
+    if (runId === radarRunId) {
+      btn.disabled = false;
+      btn.textContent = "Atualizar pares";
+    }
   }
 }
 
@@ -688,42 +768,50 @@ function showRadarStatus(kind, msg) {
 function hideRadarStatus() { $("radar-status").classList.add("hidden"); }
 
 function renderRadar(d) {
-  const pairs = d.pairs || [];
-  const oneMinuteSignals = pairs.map((p) => p.signals?.["1min"] || "AGUARDAR");
-  $("sum-call").textContent = oneMinuteSignals.filter((signal) => signal === "CALL").length;
-  $("sum-neu").textContent  = oneMinuteSignals.filter((signal) => signal === "AGUARDAR").length;
-  $("sum-put").textContent  = oneMinuteSignals.filter((signal) => signal === "PUT").length;
-  $("radar-meta").textContent = `${pairs.length} pares · ${new Date().toLocaleTimeString("pt-BR")}`;
+  const pairs = [...(d.pairs || [])].sort((first, second) => {
+    const firstRawRate = first.accuracy?.[radarSortExpiry]?.rate;
+    const secondRawRate = second.accuracy?.[radarSortExpiry]?.rate;
+    const firstRate = firstRawRate === null || firstRawRate === undefined ? -1 : Number(firstRawRate);
+    const secondRate = secondRawRate === null || secondRawRate === undefined ? -1 : Number(secondRawRate);
+    const safeFirstRate = Number.isFinite(firstRate) ? firstRate : -1;
+    const safeSecondRate = Number.isFinite(secondRate) ? secondRate : -1;
+    if (safeSecondRate !== safeFirstRate) return safeSecondRate - safeFirstRate;
+    const scoreDifference = (second.scores?.[radarSortExpiry] || 0) - (first.scores?.[radarSortExpiry] || 0);
+    return scoreDifference || first.asset.localeCompare(second.asset);
+  });
+  const selectedSignals = pairs.map((pair) => pair.signals?.[radarSortExpiry] || "AGUARDAR");
+  $("sum-call").textContent = selectedSignals.filter((signal) => signal === "CALL").length;
+  $("sum-neu").textContent = selectedSignals.filter((signal) => signal === "AGUARDAR").length;
+  $("sum-put").textContent = selectedSignals.filter((signal) => signal === "PUT").length;
+  const shortExpiry = radarSortExpiry.replace("min", " min");
+  $("sum-call-label").textContent = `CALL (${shortExpiry})`;
+  $("sum-neutral-label").textContent = `AGUARDAR (${shortExpiry})`;
+  $("sum-put-label").textContent = `PUT (${shortExpiry})`;
+  $("radar-meta").textContent = `${pairs.length} pares · ordenado por assertividade em ${shortExpiry}`;
+  document.querySelectorAll(".radar-sort").forEach((button) => {
+    const active = button.dataset.radarSort === radarSortExpiry;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-sort", active ? "descending" : "none");
+  });
 
   const tbody = $("radar-body");
   tbody.innerHTML = "";
 
   if (pairs.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="muted" style="text-align:center;padding:24px">Nenhum par retornou dados.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="muted" style="text-align:center;padding:24px">Nenhum par disponível.</td></tr>`;
     return;
   }
 
-  pairs.forEach((p, i) => {
+  pairs.forEach((p) => {
     const signals = p.signals || {};
-    const rec = signals["1min"] || "AGUARDAR";
-    const cls = rec === "CALL" ? "call" : rec === "PUT" ? "put" : "neutral";
-    const arrow = rec === "CALL" ? "▲" : rec === "PUT" ? "▼" : "●";
-    const label = rec === "CALL" ? "CALL" : rec === "PUT" ? "PUT" : "AGUARDAR";
-    const score = Number(p.score || 0);
-    const proximity = p.proximity?.["1min"]?.label || "AGUARDAR";
-    const accuracy = p.accuracy?.["1min"];
-    const accuracyText = accuracy && accuracy.rate !== null ? `${accuracy.rate.toFixed(1)}%` : "—";
-
     const tr = document.createElement("tr");
-    tr.className = "radar-row";
-    tr.title = p.reason || "";
+    tr.className = `radar-row${p.loading ? " loading" : ""}`;
+    tr.title = p.error || p.reason || "";
     tr.innerHTML = `
-      <td class="rank">${i + 1}</td>
-      <td class="pair">${escapeHtml(p.asset)}</td>
-      <td><span class="tf-badge ${cls}">${arrow} ${label} <em>${score}/12</em></span><small class="radar-proximity">${proximity} · hist. ${accuracyText}</small></td>
-      <td>${tfBadge(signals["15min"], p.accuracy?.["15min"])}</td>
-      <td>${tfBadge(signals["5min"], p.accuracy?.["5min"])}</td>
-      <td>${tfBadge(signals["1min"], p.accuracy?.["1min"])}</td>
+      <td class="pair">${escapeHtml(p.asset)}${p.error ? `<small>${escapeHtml(p.error)}</small>` : ""}</td>
+      <td>${tfBadge(signals["1min"], p.proximity?.["1min"], p.accuracy?.["1min"], p.loading)}</td>
+      <td>${tfBadge(signals["5min"], p.proximity?.["5min"], p.accuracy?.["5min"], p.loading)}</td>
+      <td>${tfBadge(signals["15min"], p.proximity?.["15min"], p.accuracy?.["15min"], p.loading)}</td>
     `;
     tr.addEventListener("click", () => {
       selectAsset(p.asset);
@@ -733,13 +821,15 @@ function renderRadar(d) {
   });
 }
 
-function tfBadge(signal, accuracy) {
-  if (!signal || signal === "—") return `<span class="tf-badge neutral">—</span>`;
-  const cls = signal === "CALL" ? "call" : signal === "PUT" ? "put" : "neutral";
-  const arrow = signal === "CALL" ? "▲" : signal === "PUT" ? "▼" : "●";
-  const label = signal === "CALL" ? "CALL" : signal === "PUT" ? "PUT" : "NEU";
-  const rate = accuracy && accuracy.rate !== null ? ` · ${accuracy.rate.toFixed(0)}%` : "";
-  return `<span class="tf-badge ${cls}">${arrow} ${label}<em>${rate}</em></span>`;
+function tfBadge(signal, proximity, accuracy, loading = false) {
+  if (!signal) return `<span class="tf-badge analyzing">ANALISANDO</span>`;
+  const safe = signal || "AGUARDAR";
+  const cls = safe === "CALL" ? "call" : safe === "PUT" ? "put" : "neutral";
+  const arrow = safe === "CALL" ? "▲" : safe === "PUT" ? "▼" : "●";
+  const label = safe === "CALL" || safe === "PUT" ? safe : (proximity?.label || "AGUARDAR");
+  const rate = accuracy && accuracy.rate !== null ? `${Number(accuracy.rate).toFixed(1)}%` : "sem amostra";
+  const state = loading ? " · atualizando" : "";
+  return `<span class="tf-badge ${cls}">${arrow} ${escapeHtml(label)}<em>${rate}${state}</em></span>`;
 }
 
 /* ============================================================

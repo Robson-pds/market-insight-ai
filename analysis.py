@@ -24,32 +24,54 @@ STRATEGIES = {
     "trend_pullback": {
         "name": "Retração na tendência",
         "description": "Busca uma correção até a média em uma tendência confirmada.",
+        "max_score": 4,
     },
     "breakout": {
         "name": "Rompimento de faixa",
         "description": "Exige fechamento além da máxima ou mínima recente com expansão de volatilidade.",
+        "max_score": 3,
     },
     "mean_reversion": {
         "name": "Reversão à média",
         "description": "Procura exaustão nas bandas e confirmação de retorno pelo RSI.",
+        "max_score": 3,
     },
     "support_resistance": {
         "name": "Suporte e resistência",
         "description": "Procura rejeição clara em zonas extremas recentes.",
+        "max_score": 3,
     },
     "momentum": {
         "name": "Momentum",
         "description": "Exige alinhamento de médias, MACD e força direcional.",
+        "max_score": 4,
     },
 }
 
 _SIGNAL_CACHE: dict[tuple[str, str, str], dict] = {}
+MIN_ACCURACY_SAMPLE = 20
 
 
 def candles_to_df(candles: list[dict]) -> pd.DataFrame:
     if not candles:
         return pd.DataFrame()
     df = pd.DataFrame(candles)
+    required = {"time", "open", "high", "low", "close", "volume"}
+    if not required.issubset(df.columns):
+        return pd.DataFrame()
+    for column in required:
+        df.loc[:, column] = pd.to_numeric(df[column], errors="coerce")
+    finite = np.isfinite(df[list(required)].astype(float)).all(axis=1)
+    valid_ohlc = (
+        (df["time"] > 0)
+        & (df[["open", "high", "low", "close"]] > 0).all(axis=1)
+        & (df["high"] >= df[["open", "close"]].max(axis=1))
+        & (df["low"] <= df[["open", "close"]].min(axis=1))
+        & (df["high"] >= df["low"])
+    )
+    df = df.loc[finite & valid_ohlc].copy()
+    if df.empty:
+        return pd.DataFrame()
     df.loc[:, "datetime"] = pd.to_datetime(df["time"], unit="s", utc=True)
     df = df.set_index("datetime").sort_index()
     df = df.rename(columns={
@@ -80,7 +102,11 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
-    df.loc[:, "RSI"] = 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.mask((gain > 0) & (loss == 0), 100.0)
+    rsi = rsi.mask((gain == 0) & (loss > 0), 0.0)
+    rsi = rsi.mask((gain == 0) & (loss == 0), 50.0)
+    df.loc[:, "RSI"] = rsi
 
     low14 = low.rolling(14).min()
     high14 = high.rolling(14).max()
@@ -227,7 +253,7 @@ def estimate_historical_accuracy(df: pd.DataFrame, strategy: str, horizon: int) 
         return {"rate": None, "sample_size": 0, "label": "Amostra insuficiente"}
     wins = total = 0
     start = max(60, len(df) - 160)
-    for end in range(start, len(df) - horizon):
+    for end in range(start, len(df) - horizon + 1):
         decision = _strategy_signal(df.iloc[:end], strategy)
         if decision["signal"] not in ("CALL", "PUT"):
             continue
@@ -235,10 +261,11 @@ def estimate_historical_accuracy(df: pd.DataFrame, strategy: str, horizon: int) 
         exit_price = float(df["Close"].iloc[end + horizon - 1])
         wins += int((decision["signal"] == "CALL" and exit_price > entry) or (decision["signal"] == "PUT" and exit_price < entry))
         total += 1
+    sufficient_sample = total >= MIN_ACCURACY_SAMPLE
     return {
-        "rate": round(wins / total * 100, 1) if total else None,
+        "rate": round(wins / total * 100, 1) if sufficient_sample else None,
         "sample_size": total,
-        "label": "Estimativa histórica; não garante o próximo resultado.",
+        "label": "Estimativa histórica; não garante o próximo resultado." if sufficient_sample else "Amostra insuficiente",
     }
 
 
@@ -293,6 +320,66 @@ def _vote_macd(df, i):
     return 0, "MACD neutro"
 
 
+def _vote_ema(df, i, fast_column, slow_column):
+    fast = df[fast_column].iloc[i]
+    slow = df[slow_column].iloc[i]
+    if pd.isna(fast) or pd.isna(slow):
+        return 0, "EMAs sem dados"
+    if fast > slow:
+        return 1, f"{fast_column} acima da {slow_column} — CALL"
+    if fast < slow:
+        return -1, f"{fast_column} abaixo da {slow_column} — PUT"
+    return 0, "EMAs sem direção"
+
+
+def _vote_bollinger(df, i):
+    close = df["Close"].iloc[i]
+    upper = df["BB_upper"].iloc[i]
+    lower = df["BB_lower"].iloc[i]
+    if pd.isna(upper) or pd.isna(lower):
+        return 0, "Bollinger sem dados"
+    if close <= lower:
+        return 1, "Preço na banda inferior — CALL"
+    if close >= upper:
+        return -1, "Preço na banda superior — PUT"
+    return 0, "Preço dentro das bandas"
+
+
+def _vote_adx(df, i):
+    adx = df["ADX"].iloc[i]
+    plus_di = df["PLUS_DI"].iloc[i]
+    minus_di = df["MINUS_DI"].iloc[i]
+    if pd.isna(adx) or pd.isna(plus_di) or pd.isna(minus_di) or adx < 20:
+        return 0, "ADX sem tendência forte"
+    if plus_di > minus_di:
+        return 1, f"ADX {adx:.1f} com +DI dominante — CALL"
+    if minus_di > plus_di:
+        return -1, f"ADX {adx:.1f} com -DI dominante — PUT"
+    return 0, "ADX sem direção"
+
+
+def _vote_cci(df, i):
+    cci = df["CCI"].iloc[i]
+    if pd.isna(cci):
+        return 0, "CCI sem dados"
+    if cci < -100:
+        return 1, f"CCI {cci:.1f} em sobrevenda — CALL"
+    if cci > 100:
+        return -1, f"CCI {cci:.1f} em sobrecompra — PUT"
+    return 0, f"CCI {cci:.1f} neutro"
+
+
+def _vote_williams(df, i):
+    williams = df["WilliamsR"].iloc[i]
+    if pd.isna(williams):
+        return 0, "Williams %R sem dados"
+    if williams < -80:
+        return 1, f"Williams %R {williams:.1f} em sobrevenda — CALL"
+    if williams > -20:
+        return -1, f"Williams %R {williams:.1f} em sobrecompra — PUT"
+    return 0, f"Williams %R {williams:.1f} neutro"
+
+
 # Peso relativo dos indicadores usados pelo motor legado de detalhamento.
 INDICATOR_WEIGHTS = {
     "RSI (14)":       1.5,
@@ -319,8 +406,6 @@ def aggregate_votes(votes):
     # Soma ponderada dos votos
     weighted_bull = sum(INDICATOR_WEIGHTS.get(v["name"], 1.0) for v in votes if v["vote"] == 1)
     weighted_bear = sum(INDICATOR_WEIGHTS.get(v["name"], 1.0) for v in votes if v["vote"] == -1)
-    total_weight = sum(INDICATOR_WEIGHTS.get(v["name"], 1.0) for v in votes)
-
     bulls = sum(1 for v in votes if v["vote"] == 1)
     bears = sum(1 for v in votes if v["vote"] == -1)
     neutrals = sum(1 for v in votes if v["vote"] == 0)
@@ -497,7 +582,8 @@ def analyze_asset(asset: str, strategy: str = "trend_pullback") -> dict:
     for expiry in ("1min", "5min", "15min"):
         cache_key = (asset, strategy, expiry)
         cached = _SIGNAL_CACHE.get(cache_key)
-        if cached and cached["expires_at"] > now and "proximity" in cached and "historical_accuracy" in cached:
+        market_safe = news["available"] and not news["blocked"]
+        if market_safe and cached and cached["expires_at"] > now and "proximity" in cached and "historical_accuracy" in cached:
             signals[expiry] = {**cached, "locked": True, "seconds_remaining": cached["expires_at"] - now}
             continue
 
@@ -505,14 +591,16 @@ def analyze_asset(asset: str, strategy: str = "trend_pullback") -> dict:
         candles = _drop_incomplete_candle(iq_service.get_candles_smart(asset, interval, 240), interval)
         df = compute_indicators(candles_to_df(candles))
         decision = _strategy_signal(df, strategy) if not df.empty else _signal("AGUARDAR", 0, "Sem dados de mercado.", [])
-        if news["blocked"]:
+        if not news["available"]:
+            decision = _signal("AGUARDAR", 0, "Entrada suspensa: calendário econômico indisponível.", [])
+        elif news["blocked"]:
             decision = _signal("AGUARDAR", 0, "Entrada bloqueada por notícia de alto impacto.", [event["title"] for event in news["events"]])
 
         # Alinha o vencimento ao proximo fechamento de vela da IQ Option.
         # Os timeframes sao contados a partir do epoch Unix: 1m, 5m e 15m.
         expires_at = ((now // interval) + 1) * interval
-        horizon = max(1, interval // 60)
-        decision["proximity"] = _proximity(decision["score"])
+        horizon = 1
+        decision["proximity"] = _proximity(decision["score"], STRATEGIES[strategy]["max_score"])
         decision["historical_accuracy"] = estimate_historical_accuracy(df, strategy, horizon)
         signals[expiry] = {
             **decision,
@@ -521,7 +609,10 @@ def analyze_asset(asset: str, strategy: str = "trend_pullback") -> dict:
             "locked": False,
             "seconds_remaining": expires_at - now,
         }
-        _SIGNAL_CACHE[cache_key] = signals[expiry]
+        if market_safe:
+            _SIGNAL_CACHE[cache_key] = signals[expiry]
+        else:
+            _SIGNAL_CACHE.pop(cache_key, None)
 
     warning = news["warning"] if not news["available"] else None
     return {

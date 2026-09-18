@@ -25,9 +25,11 @@ def check_dependencies():
     for mod, pkg in [
         ("fastapi", "fastapi"),
         ("uvicorn", "uvicorn[standard]"),
-        ("yfinance", "yfinance"),
         ("pandas", "pandas"),
         ("numpy", "numpy"),
+        ("requests", "requests"),
+        ("dotenv", "python-dotenv"),
+        ("iqair", "iqair"),
     ]:
         try:
             __import__(mod)

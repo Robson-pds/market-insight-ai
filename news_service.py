@@ -3,10 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
+import threading
+import time
 
 import requests
 
 CALENDAR_URL = os.getenv("BIQUOTE_CALENDAR_URL", "https://biquote.io/api/calendar/upcoming")
+CALENDAR_CACHE_SECONDS = 60
+_calendar_cache: dict = {"expires_at": 0.0, "payload": None}
+_calendar_lock = threading.Lock()
 CURRENCY_BY_ASSET = {
     "EUR": "EUR", "GBP": "GBP", "USD": "USD", "JPY": "JPY",
     "CHF": "CHF", "CAD": "CAD", "AUD": "AUD", "NZD": "NZD",
@@ -30,6 +35,22 @@ NEWS_DESCRIPTIONS = {
 }
 
 
+def _get_calendar_payload() -> list[dict]:
+    now = time.monotonic()
+    with _calendar_lock:
+        cached = _calendar_cache["payload"]
+        if cached is not None and _calendar_cache["expires_at"] > now:
+            return cached
+
+        response = requests.get(CALENDAR_URL, timeout=8)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("resposta do calendario nao e uma lista")
+        _calendar_cache.update(payload=payload, expires_at=now + CALENDAR_CACHE_SECONDS)
+        return payload
+
+
 def describe_event(name: str, sector: str | None = None) -> str:
     text = f"{name} {sector or ''}".lower()
     for keyword, description in NEWS_DESCRIPTIONS.items():
@@ -50,11 +71,7 @@ def get_news_risk(asset: str, now: datetime | None = None) -> dict:
     """
     now = now or datetime.now(timezone.utc)
     try:
-        response = requests.get(CALENDAR_URL, timeout=8)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError("resposta do calendario nao e uma lista")
+        payload = _get_calendar_payload()
     except Exception as exc:
         return {
             "available": False,
@@ -104,11 +121,7 @@ def get_news_risk(asset: str, now: datetime | None = None) -> dict:
 def get_calendar_events(hours: int = 24, importance: str = "all") -> dict:
     """Busca eventos futuros da Biquote para a tela de noticias."""
     try:
-        response = requests.get(CALENDAR_URL, timeout=8)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError("resposta do calendario nao e uma lista")
+        payload = _get_calendar_payload()
     except Exception as exc:
         return {
             "available": False,

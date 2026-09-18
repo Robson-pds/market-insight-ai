@@ -37,11 +37,18 @@ _payout_cache: dict[str, dict] = {}
 _payout_cache_ts = 0.0
 
 
+def _ambiente_serverless() -> bool:
+    """Vercel/outros: sem processo persistente, sem WebSocket contínuo p/ IQ."""
+    return os.getenv("VERCEL") == "1" or os.getenv("SERVERLESS") == "1"
+
+
 def connect() -> tuple[bool, str]:
     global _api
     with _lock:
         if _api is not None:
             return True, "Já conectado"
+        if _ambiente_serverless():
+            return False, "Ambiente serverless: conexão IQ Option desativada (rode local para análise/trading)."
         if not IQ_EMAIL or not IQ_PASSWORD:
             return False, "IQ_EMAIL/IQ_PASSWORD ausentes no .env"
         try:
@@ -63,6 +70,8 @@ def connect() -> tuple[bool, str]:
 def reconnect(email: str, password: str) -> tuple[bool, str]:
     """Troca a conta em memória; credenciais não são persistidas."""
     global _api, IQ_EMAIL, IQ_PASSWORD
+    if _ambiente_serverless():
+        return False, "Ambiente serverless: conexão IQ Option desativada."
     with _lock:
         old_api = _api
         try:

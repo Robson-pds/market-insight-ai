@@ -90,6 +90,39 @@ docker compose up --build
 
 Acesse **http://localhost:8000**.
 
+## Rodando na Vercel (serverless)
+
+O projeto funciona na Vercel com **degradação automática**: o back-end
+detecta o ambiente serverless (variável `VERCEL`) e:
+
+- usa SQLite em local gravável: diretório do projeto (uso local) →
+  `/tmp/market.db` → memória (efêmero por instância). Definir
+  `MARKET_DB_PATH` força um caminho;
+- não inicia o worker de apuração em background (não existe processo
+  persistente no serverless);
+- desativa a conexão IQ Option (`/api/connect` e rotas de análise retornam
+  503 com mensagem clara).
+
+**Passos:**
+
+1. No dashboard da Vercel, importe o repositório (Framework Preset:
+   `Other`/`Python` — o entrypoint `main:app` é detectado automaticamente).
+2. Em **Settings → Environment Variables**, adicione pelo menos
+   `IQ_EMAIL` e `IQ_PASSWORD` se quiser tentar a conexão (recomendado manter
+   apenas para testes) — ou deixe vazias para a UI administrativa funcionar.
+3. Deploy.
+
+**Limitações do ambiente serverless:**
+
+- O histórico de entradas/configurações **não persiste** entre requisições
+  (arquivo efêmero). Para persistência na nuvem, a evolução é usar um banco
+  externo (ex.: Postgres/Supabase) — `trade_manager` foi isolado para
+  facilitar essa troca.
+- Streaming em tempo real e execução de ordens dependem de conexão WebSocket
+  persistente com a IQ Option — isso **só funciona rodando local**.
+- Rotas que dependem da IQ Option (`/api/analyze/*`, `/api/candles/*`,
+  `/api/radar`, `/api/ai/analise`) retornam 503 em produção.
+
 ## Configuração (`.env`)
 
 > **Atenção:** o arquivo `.env` contém suas credenciais da IQ Option e NÃO
@@ -104,6 +137,7 @@ Acesse **http://localhost:8000**.
 | `OPENAI_API_KEY` | vazio | Opcional. Habilita o botão "🤖 IA — segunda opinião" na aba Análise. |
 | `AI_MODEL` | `gpt-4o-mini` | Modelo usado pela IA. |
 | `AI_BASE_URL` | vazio | Opcional. Endpoint compatível com a API OpenAI (ex.: Ollama/LM Studio). |
+| `MARKET_DB_PATH` | auto | Onde fica o SQLite (`market.db`). Use `:memory:` para forçar memória; na Vercel o padrão cai para `/tmp` (efêmero). |
 | `BIQUOTE_CALENDAR_URL` | `https://biquote.io/api/calendar/upcoming` | Endpoint público do calendário econômico Biquote. |
 | `HOST` | `127.0.0.1` | Host do servidor. Use `0.0.0.0` para expor na rede. |
 | `PORT` | `8000` | Porta HTTP. |

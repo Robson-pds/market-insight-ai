@@ -15,11 +15,18 @@ import ai_advisor
 async def lifespan(app: FastAPI):
     # Inicializa o módulo de entradas (config + worker de apuração) antes do
     # connect, para que a conta configurada seja aplicada na conexão.
-    trade_manager.iniciar()
+    # Nenhuma falha aqui pode derrubar a aplicação (importante na Vercel).
+    try:
+        trade_manager.iniciar()
+    except Exception as exc:
+        print(f"[startup] aviso: falha ao iniciar o módulo de entradas: {exc}")
     # Tenta conectar à IQ Option na inicialização
     print("[startup] Conectando à IQ Option...")
-    ok, msg = iq_service.connect()
-    print(f"[startup] {msg}")
+    try:
+        ok, msg = iq_service.connect()
+        print(f"[startup] {msg}")
+    except Exception as exc:
+        print(f"[startup] aviso: falha na conexão IQ Option: {exc}")
     yield
     # Shutdown (opcional): limpar streams
     print("[shutdown] Encerrando...")

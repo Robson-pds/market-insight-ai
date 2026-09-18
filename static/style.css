@@ -674,3 +674,153 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
   text-transform: uppercase; color: var(--muted); font-weight: 700;
   padding: 0 4px;
 }
+/* ============================================================
+   ENTRADAS — formulário, histórico e configuração
+============================================================ */
+.entry-quick { margin-top: 14px; width: 100%; }
+
+.entry-card .entry-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.entry-row { display: flex; flex-direction: column; gap: 6px; }
+.entry-row label {
+  font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted); font-weight: 700;
+}
+.entry-row input, .entry-row select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 11px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.entry-row input:focus, .entry-row select:focus {
+  outline: none; border-color: var(--blue);
+}
+.entry-row-wide { grid-column: 1 / -1; }
+.entry-actions {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.direction-toggle { display: flex; gap: 8px; }
+.dir-btn {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.15s ease;
+  font-family: inherit;
+}
+.dir-btn:hover { border-color: var(--blue); color: var(--text); }
+.dir-btn.active { background: var(--panel-2); border-color: var(--blue); color: var(--text); }
+.dir-btn.dir-call.active { border-color: var(--green); color: var(--green); }
+.dir-btn.dir-put.active { border-color: var(--red); color: var(--red); }
+
+/* Histórico */
+.entries-table td { vertical-align: middle; }
+.row-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.btn-mini {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-mini:hover { border-color: var(--blue); }
+.btn-mini.danger:hover { border-color: var(--red); color: var(--red); }
+.mini-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.result-pos { color: var(--green); font-weight: 600; }
+.result-neg { color: var(--red); font-weight: 600; }
+
+/* ============================================================
+   CONFIGURAÇÃO DE ENTRADA
+============================================================ */
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.config-field {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 14px;
+}
+.config-field label {
+  font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--muted); font-weight: 700;
+}
+.config-field input, .config-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 11px;
+  font-size: 14px;
+  font-family: inherit;
+}
+.config-field input:focus, .config-field select:focus {
+  outline: none; border-color: var(--blue);
+}
+.config-state {
+  display: flex; flex-direction: column;
+  gap: 10px; margin-top: 14px;
+}
+.config-state div {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.config-state span { color: var(--muted); font-size: 12.5px; }
+.config-state strong { font-variant-numeric: tabular-nums; }
+.real-warning { color: var(--red) !important; font-weight: 700; }
+.config-save-bar { margin-top: 18px; }
+
+/* ============================================================
+   RELATÓRIO
+============================================================ */
+.report-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.report-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.report-card span {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;
+  color: var(--muted); font-weight: 700;
+}
+.report-card strong {
+  font-size: 20px; font-variant-numeric: tabular-nums;
+}
+.report-card.call strong { color: var(--green); }
+.report-card.put strong { color: var(--red); }

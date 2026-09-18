@@ -26,7 +26,7 @@
       </div>
       <button id="login-button" class="login-button">Login</button>
       <div class="balance">
-        <span class="balance-label">PRACTICE</span>
+        <span class="balance-label" id="balance-label">PRACTICE</span>
         <strong id="balance-value">—</strong>
       </div>
     </div>
@@ -61,9 +61,12 @@
 
   <!-- ABAS -->
   <nav class="view-tabs hidden" id="main-navigation">
-    <button class="view-tab active" data-view="trade">📈 Análise em Tempo Real</button>
+    <button class="view-tab active" data-view="trade">📈 Análise</button>
+    <button class="view-tab" data-view="entrada">🎯 Entradas</button>
+    <button class="view-tab" data-view="config">⚙️ Configuração</button>
+    <button class="view-tab" data-view="relatorio">📊 Relatório</button>
     <button class="view-tab" data-view="radar">📡 Radar de Pares</button>
-    <button class="view-tab" data-view="news">🗓 Notícias Econômicas</button>
+    <button class="view-tab" data-view="news">🗓 Notícias</button>
   </nav>
 
   <section id="view-opportunities" class="view hidden">
@@ -77,6 +80,216 @@
     </div>
     <div id="opportunities-status" class="status loading">Analisando pares…</div>
     <div id="opportunities-grid" class="opportunities-grid"></div>
+  </section>
+
+  <!-- ============================================================
+       ABA — ENTRADAS (execução + histórico)
+  ============================================================= -->
+  <section id="view-entrada" class="view hidden">
+    <div class="entrada-header">
+      <div>
+        <span class="eyebrow">HISTÓRICO E EXECUÇÃO</span>
+        <h2>🎯 Entradas</h2>
+        <p class="muted" id="entrada-resumo">Carregando…</p>
+      </div>
+    </div>
+
+    <div id="entrada-aviso" class="status error hidden"></div>
+
+    <!-- Nova entrada -->
+    <div class="card entry-card">
+      <h3>Nova entrada</h3>
+      <div class="entry-form">
+        <div class="entry-row">
+          <label for="entry-asset">ATIVO</label>
+          <input id="entry-asset" type="text" placeholder="EURUSD" autocomplete="off" list="entry-asset-list" />
+          <datalist id="entry-asset-list"></datalist>
+        </div>
+        <div class="entry-row">
+          <label>DIREÇÃO</label>
+          <div class="direction-toggle" id="entry-direction">
+            <button type="button" data-dir="CALL" class="dir-btn dir-call">▲ CALL</button>
+            <button type="button" data-dir="PUT" class="dir-btn dir-put">▼ PUT</button>
+          </div>
+        </div>
+        <div class="entry-row">
+          <label for="entry-expiry">EXPIRAÇÃO</label>
+          <select id="entry-expiry">
+            <option value="1">1 minuto</option>
+            <option value="5">5 minutos</option>
+            <option value="15">15 minutos</option>
+          </select>
+        </div>
+        <div class="entry-row">
+          <label for="entry-value">VALOR (US$)</label>
+          <input id="entry-value" type="number" min="0.01" step="0.01" placeholder="—" />
+        </div>
+        <div class="entry-row entry-row-wide">
+          <label for="entry-observation" class="muted small">Observação (opcional)</label>
+          <input id="entry-observation" type="text" maxlength="200" placeholder="Ex.: soros nível 2" />
+        </div>
+      </div>
+      <div class="entry-actions">
+        <button id="btn-entry-execute" class="btn-primary">⚡ Executar na IQ Option</button>
+        <button id="btn-entry-manual" class="btn-secondary">🖊 Registrar manualmente</button>
+      </div>
+      <p class="muted small" id="entry-value-hint">O valor fica vazio para usar o sugerido pela configuração.</p>
+    </div>
+
+    <!-- Histórico -->
+    <div class="card">
+      <div class="table-header">
+        <h3>Histórico de entradas</h3>
+        <div class="radar-actions">
+          <select id="entries-period" aria-label="Período do histórico">
+            <option value="dia">Hoje</option>
+            <option value="semana">Esta semana</option>
+            <option value="mes">Este mês</option>
+            <option value="ano">Este ano</option>
+          </select>
+          <button id="btn-entries-refresh" class="btn-secondary">Atualizar</button>
+        </div>
+      </div>
+      <div id="entries-status" class="status hidden"></div>
+      <div class="table-scroll">
+        <table class="radar-table entries-table">
+          <thead>
+            <tr>
+              <th>Data</th>
+              <th>Ativo</th>
+              <th>Direção</th>
+              <th>Valor</th>
+              <th>Exp.</th>
+              <th>Estratégia</th>
+              <th>Conta</th>
+              <th>Status</th>
+              <th>Resultado</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="entries-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ABA — CONFIGURAÇÃO DE ENTRADA
+  ============================================================= -->
+  <section id="view-config" class="view hidden">
+    <div class="config-header">
+      <div>
+        <span class="eyebrow">FORMA DE ENTRADA</span>
+        <h2>⚙️ Configurações de entrada</h2>
+        <p class="muted">Define onde e como as entradas são executadas (demo ou oficial), o valor, o limite de perda diária e a estratégia de gestão.</p>
+      </div>
+    </div>
+
+    <div id="config-status" class="status hidden"></div>
+
+    <div class="config-grid">
+      <div class="card">
+        <h3>Conta de operação</h3>
+        <div class="config-field">
+          <label>ONDE ENTRAR</label>
+          <div class="direction-toggle" id="config-account">
+            <button type="button" data-conta="PRACTICE" class="dir-btn">🛡 Demo (PRACTICE)</button>
+            <button type="button" data-conta="REAL" class="dir-btn">💰 Oficial (REAL)</button>
+          </div>
+          <p class="muted small" id="config-account-warning">Use a conta demo para testes. Operar na conta oficial envolve dinheiro real.</p>
+        </div>
+        <div class="config-field">
+          <label for="config-value">VALOR MÍNIMO DE ENTRADA (US$)</label>
+          <input id="config-value" type="number" min="0.01" step="0.01" />
+        </div>
+        <div class="config-field">
+          <label for="config-max-loss">VALOR MÁXIMO DE PERDA POR DIA (US$)</label>
+          <input id="config-max-loss" type="number" min="0" step="0.01" />
+          <p class="muted small">Ao atingir essa perda no dia, novas execuções automáticas são bloqueadas. 0 = sem limite.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Estratégia de entrada</h3>
+        <div class="config-field">
+          <label for="config-strategy">ESTRATÉGIA</label>
+          <select id="config-strategy">
+            <option value="fixa">Fixa — mesmo valor em todas as entradas</option>
+            <option value="soros">Soros — reinveste o lucro acumulado</option>
+          </select>
+        </div>
+        <div class="config-field" id="config-soros-field">
+          <label for="config-soros-level">NÍVEL DO SOROS</label>
+          <input id="config-soros-level" type="number" min="1" max="20" step="1" />
+          <p class="muted small">Quantas entradas consecutivas com lucro reinvestido antes de zerar o ciclo. Ex.: nível 3 reinveste o lucro até a 3ª entrada vencedora em sequência.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Estado atual</h3>
+        <div class="config-state">
+          <div><span>Valor da próxima entrada</span><strong id="state-next-value">—</strong></div>
+          <div><span>Ciclo Soros</span><strong id="state-soros-cycle">—</strong></div>
+          <div><span>Lucro acumulado (Soros)</span><strong id="state-soros-profit">—</strong></div>
+          <div><span>Resultado do dia</span><strong id="state-day-result">—</strong></div>
+          <div><span>Limite de perda diária</span><strong id="state-day-limit">—</strong></div>
+        </div>
+        <p class="muted small">O ciclo Soros é recalculado automaticamente a partir do histórico de entradas fechadas.</p>
+      </div>
+    </div>
+
+    <div class="config-save-bar">
+      <button id="btn-save-config" class="btn-primary">Salvar configurações</button>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ABA — RELATÓRIO
+  ============================================================= -->
+  <section id="view-relatorio" class="view hidden">
+    <div class="radar-header">
+      <div>
+        <span class="eyebrow">ENTRADAS E RESULTADOS</span>
+        <h2>📊 Relatório</h2>
+        <p class="muted" id="report-meta">Resumo de entradas e ganhos/perdas no período.</p>
+      </div>
+      <div class="radar-actions">
+        <label for="report-period">PERÍODO</label>
+        <select id="report-period">
+          <option value="dia">Hoje</option>
+          <option value="semana">Esta semana</option>
+          <option value="mes">Este mês</option>
+          <option value="ano">Este ano</option>
+        </select>
+        <button id="btn-report-refresh" class="btn-primary">Gerar relatório</button>
+      </div>
+    </div>
+
+    <div id="report-status" class="status hidden"></div>
+
+    <div id="report-output" class="hidden">
+      <div class="report-summary" id="report-cards"></div>
+      <div class="card">
+        <div class="table-header">
+          <h3>Resultado por dia</h3>
+        </div>
+        <div class="table-scroll">
+          <table class="radar-table">
+            <thead>
+              <tr>
+                <th>Dia</th>
+                <th>Entradas</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th>Empates</th>
+                <th>Líquido</th>
+              </tr>
+            </thead>
+            <tbody id="report-days-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- ============================================================
@@ -149,6 +362,7 @@
         </div>
 
         <div class="analysis-note" id="analysis-note">O sinal só muda quando o prazo correspondente expirar.</div>
+        <button id="quick-entry" class="btn-primary entry-quick hidden">🎯 Entrar com este sinal (1m)</button>
       </div>
 
     </div>

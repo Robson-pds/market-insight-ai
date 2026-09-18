@@ -483,17 +483,20 @@ function renderSignal(expiry, signal) {
   card.className = `expiry-card ${direction === "CALL" ? "call" : direction === "PUT" ? "put" : "neutral"} ${statusClass}`.trim();
   $( `signal-${expiry}` ).textContent = displayStatus;
 
-  // Percentual de acerto: clicável para ajuste manual em runtime
+  // Percentual de acerto real (janela rolante) + últimos resultados
   const accuracy = signal.historical_accuracy;
   let accuracyHtml;
+  let ultimosHtml = "";
   if (accuracy && accuracy.rate !== null) {
-    const manual = accuracy.manual ? '<span class="acc-manual"> (manual)</span>' : "";
-    accuracyHtml = `<span class="acc-edit" data-acc="${expiry}" title="Clique para ajustar o percentual (runtime)">acerto: <b>${Number(accuracy.rate).toFixed(1)}%</b></span>${manual}`;
+    accuracyHtml = `acerto: <b>${Number(accuracy.rate).toFixed(1)}%</b> (${accuracy.sample_size} sinais · ${accuracy.wins} certos)`;
+    ultimosHtml = `<div class="acc-streak">${(accuracy.ultimos || []).map((r) =>
+      `<span class="streak-dot ${r === "OK" ? "ok" : "erro"}" title="${r}">${r === "OK" ? "✔" : "✘"}</span>`
+    ).join("")}</div>`;
   } else {
-    accuracyHtml = `<span class="acc-edit muted" data-acc="${expiry}" title="Clique para definir um percentual (runtime)">acerto: sem amostra</span>`;
+    accuracyHtml = `acerto: <span class="muted">${accuracy?.label || "sem amostra suficiente"}</span>`;
   }
   $( `reason-${expiry}` ).innerHTML =
-    `${escapeHtml(signal.reason || "Sem confirmação suficiente.")} · ` + accuracyHtml;
+    `${escapeHtml(signal.reason || "Sem confirmação suficiente.")} · ` + accuracyHtml + ultimosHtml;
 
   // Votos dos indicadores ativos
   const votesEl = $(`votes-${expiry}`);
@@ -1297,52 +1300,6 @@ function renderReport(d) {
 setInterval(() => { if (!$("view-entrada").classList.contains("hidden")) loadEntries(); }, 15000);
 
 /* ============================================================
-   Votos dos indicadores + percentual de acerto editável
-============================================================ */
-document.addEventListener("click", (event) => {
-  const alvo = event.target.closest("[data-acc]");
-  if (!alvo) return;
-  editarAcerto(alvo.dataset.acc);
-});
-
-async function editarAcerto(expiry) {
-  const atual = window.latestAnalysis?.signals?.[expiry]?.historical_accuracy;
-  const valorAtual = atual && atual.rate !== null ? String(atual.rate) : "";
-  const entrada = window.prompt(
-    `Percentual de acerto manual para ${expiry} (0 a 100).\nDeixe VAZIO para apagar o manual e voltar ao automático:`,
-    valorAtual
-  );
-  if (entrada === null) return;
-  const listaErro = [];
-  if (entrada.trim() === "") {
-    try {
-      const r = await fetch(`/api/accuracy/${expiry}`, { method: "DELETE" });
-      if (!r.ok) throw new Error("Falha ao remover");
-    } catch (e) { listaErro.push(e.message); }
-  } else {
-    const taxa = parseFloat(entrada.replace(",", "."));
-    if (!Number.isFinite(taxa) || taxa < 0 || taxa > 100) {
-      alert("Valor inválido. Use um número entre 0 e 100.");
-      return;
-    }
-    try {
-      const r = await fetch(`/api/accuracy/${expiry}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taxa }),
-      });
-      if (!r.ok) throw new Error("Falha ao salvar");
-    } catch (e) { listaErro.push(e.message); }
-  }
-  if (listaErro.length) {
-    $("analysis-note").textContent = `Erro ao ajustar acerto: ${listaErro.join("; ")}`;
-  } else {
-    $("analysis-note").textContent = `Percentual de acerto de ${expiry} atualizado (runtime).`;
-  }
-  await loadAnalysis();
-}
-
-/* ============================================================
    IA — segunda opinião
 ============================================================ */
 $("btn-ai").addEventListener("click", consultarIA);
@@ -1384,8 +1341,25 @@ async function consultarIA() {
 }
 
 /* ============================================================
-   Aba Estratégias — catálogo + indicadores ativos
+   Aba Estratégias — catálogo + parâmetros + indicadores ativos
 ============================================================ */
+const paramLabels = {
+  adx_min: "ADX mínimo",
+  near_ema_atr: "Prox. da EMA (×ATR)",
+  rsi_call_min: "RSI CALL mín.",
+  rsi_call_max: "RSI CALL máx.",
+  rsi_put_min: "RSI PUT mín.",
+  rsi_put_max: "RSI PUT máx.",
+  min_score: "Score mínimo",
+  expansao_atr: "Expansão (×ATR)",
+  rsi_sobrevenda: "RSI sobrevenda",
+  rsi_sobrecompra: "RSI sobrecompra",
+  zona_atr: "Zona (×ATR)",
+  pavio_ratio: "Pavio × corpo",
+  rsi_call: "RSI CALL",
+  rsi_put: "RSI PUT",
+};
+
 async function loadStrategiesView() {
   const grid = $("strategies-grid");
   grid.innerHTML = Object.entries(strategyCatalog || {}).map(([key, item]) => {
@@ -1394,20 +1368,96 @@ async function loadStrategiesView() {
       <div class="strategy-card-mini ${ativa ? "active" : ""}" data-strategy="${escapeHtml(key)}">
         <div class="strategy-mini-head">
           <strong>${escapeHtml(item.name)}</strong>
-          <button class="btn-mini">${ativa ? "✓ Ativa" : "Usar"}</button>
+          <div class="strategy-mini-actions">
+            <button class="btn-mini" data-act="usar">${ativa ? "✓ Ativa" : "Usar"}</button>
+            <button class="btn-mini" data-act="params" title="Ajustar limiares da estratégia">⚙</button>
+          </div>
         </div>
         <p>${escapeHtml(item.description)}</p>
         <small class="muted">Indicadores: ${(item.indicadores || []).map(escapeHtml).join(", ")}</small>
+        <div class="strategy-params hidden" data-params="${escapeHtml(key)}"></div>
       </div>`;
   }).join("");
-  grid.querySelectorAll("[data-strategy]").forEach((card) => {
-    card.querySelector("button").addEventListener("click", () => {
-      selectedStrategy = card.dataset.strategy;
+  grid.querySelectorAll("[data-act='usar']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedStrategy = btn.closest("[data-strategy]").dataset.strategy;
       confirmStrategy(); // re-confirma e parte para o rastreamento com a nova estratégia
     });
   });
+  grid.querySelectorAll("[data-act='params']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const card = btn.closest("[data-strategy]");
+      const painel = card.querySelector("[data-params]");
+      painel.classList.toggle("hidden");
+      if (!painel.dataset.loaded) renderParams(painel, card.dataset.strategy);
+    });
+  });
+  await loadStrategyParams();
   await loadIndicators();
 }
+
+async function loadStrategyParams() {
+  try {
+    const r = await fetch("/api/strategy-params");
+    const d = await r.json();
+    window.strategyParams = d;
+    $("use-votes").checked = !!d.usar_votos;
+    document.querySelectorAll("[data-params]").forEach((painel) => {
+      if (!painel.classList.contains("hidden")) renderParams(painel, painel.dataset.params);
+    });
+  } catch {}
+}
+
+function renderParams(painel, key) {
+  const atuais = window.strategyParams?.atuais?.[key] || {};
+  const defaults = window.strategyParams?.defaults?.[key] || {};
+  painel.dataset.loaded = "true";
+  const campos = Object.keys(defaults).map((chave) => `
+    <label class="param-field">
+      <span>${escapeHtml(paramLabels[chave] || chave)}</span>
+      <input type="number" step="any" data-param="${escapeHtml(chave)}" value="${atuais[chave] ?? defaults[chave]}" />
+    </label>`).join("");
+  painel.innerHTML = `
+    <div class="param-grid">${campos}</div>
+    <button class="btn-mini" data-save-params="${escapeHtml(key)}">Salvar parâmetros</button>
+    <span class="params-status muted small"></span>`;
+  painel.querySelector("[data-save-params]").addEventListener("click", () => saveParams(key, painel));
+}
+
+async function saveParams(key, painel) {
+  const params = {};
+  painel.querySelectorAll("[data-param]").forEach((input) => {
+    params[input.dataset.param] = parseFloat(input.value);
+  });
+  const status = painel.querySelector(".params-status");
+  status.textContent = "Salvando…";
+  try {
+    const r = await fetch("/api/strategy-params", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategy: key, params }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || d.detail || "Falha ao salvar");
+    window.strategyParams.atuais[key] = d.atuais[key];
+    status.textContent = "✓ " + d.message;
+    setTimeout(() => { status.textContent = ""; }, 2500);
+    loadAnalysis(true); // recalcula com os novos limiares
+  } catch (e) {
+    status.textContent = "✗ " + e.message;
+  }
+}
+
+$("use-votes").addEventListener("change", async (event) => {
+  try {
+    await fetch("/api/strategy-params/votos", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usar_votos: event.target.checked }),
+    });
+    loadAnalysis(true);
+  } catch {}
+});
 
 async function loadIndicators() {
   try {

@@ -37,11 +37,14 @@ indicadores técnicos, contexto de múltiplos timeframes e calendário econômic
 - **Relatório de entradas e ganhos/perdas** por dia, semana, mês ou ano:
   totais, taxa de acerto, ganho/perda bruta, líquido e resultado por dia.
 - **Aba Estratégias**: catálogo das estratégias (descrição, indicadores usados,
-  troca rápida) e **ativação/desativação de indicadores** que participam dos
-  votos de detalhamento e da consulta à IA.
-- **Percentual de acerto editável**: o percentual de cada expiração pode ser
-  ajustado em tempo de execução (override manual), voltando ao automático
-  quando desejar.
+  troca rápida), **parâmetros ajustáveis por estratégia** (limiares de ADX/RSI/
+  ATR e score mínimo) e **ativação/desativação de indicadores** que participam
+  dos votos de detalhamento e da consulta à IA. Opcionalmente, os votos dos
+  indicadores podem **filtrar o sinal** (vira AGUARDAR se indicarem o contrário).
+- **Percentual de acerto real (janela rolante)**: calculado sobre os últimos
+  sinais comparáveis nos candles fechados — reage aos acertos/erros recentes,
+  inclusive quando a vela vai contra o sinal — e exibe a sequência dos últimos
+  resultados (✔/✘) em cada expiração.
 - **IA — segunda opinião**: botão na aba Análise que envia os parâmetros
   atuais (sinais, votos dos indicadores, notícias) para um modelo de
   linguagem (OpenAI ou endpoint compatível) e devolve direção, confiança,
@@ -154,8 +157,9 @@ o campo opcional `preparar`).
 - `GET /api/trade/relatorio?periodo=dia|semana|mes|ano` — resumo de entradas e ganhos/perdas.
 - `GET /api/indicators` — catálogo de indicadores com status ativo.
 - `PUT /api/indicators` — salva a lista de indicadores ativos `{"ativos": ["rsi", "macd"]}`.
-- `PUT /api/accuracy/{expiry}` — define o percentual de acerto manual `{"taxa": 72.5}`.
-- `DELETE /api/accuracy/{expiry}` — remove o percentual manual (volta ao automático).
+- `GET /api/strategy-params` — defaults e valores efetivos das estratégias + flag `usar_votos`.
+- `PUT /api/strategy-params` — salva parâmetros de uma estratégia `{"strategy", "params": {...}}`.
+- `PUT /api/strategy-params/votos` — liga/desliga o filtro dos votos `{"usar_votos": bool}`.
 - `POST /api/ai/analise` — consulta a IA `{"ativo", "strategy", "instrucao_extra?"}`.
 
 Exemplos de tickers: `PETR4.SA`, `VALE3.SA`, `ITUB4.SA`, `AAPL`, `MSFT`,

@@ -923,3 +923,37 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 .ai-direcao.neutral { color: var(--amber); border-color: var(--amber); }
 .ai-just { margin: 0; color: var(--text); line-height: 1.5; }
 .ai-riscos { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
+
+/* ============================================================
+   Parâmetros de estratégia + filtro de votos + sequência de acerto
+============================================================ */
+.strategy-mini-actions { display: flex; gap: 6px; }
+.strategy-params { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 10px; }
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.param-field { display: flex; flex-direction: column; gap: 4px; }
+.param-field span { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+.param-field input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.param-field input:focus { outline: none; border-color: var(--blue); }
+.params-status { margin-left: 8px; font-size: 12px; }
+.votos-toggle { margin-top: 12px; }
+.acc-streak { display: flex; gap: 3px; margin-top: 6px; flex-wrap: wrap; }
+.streak-dot {
+  width: 18px; height: 18px; border-radius: 5px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+}
+.streak-dot.ok { background: rgba(38, 222, 129, 0.15); color: var(--green); }
+.streak-dot.erro { background: rgba(255, 92, 92, 0.15); color: var(--red); }

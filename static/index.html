@@ -408,6 +408,13 @@
         <button id="btn-indicators-save" class="btn-secondary">Salvar seleção</button>
       </div>
       <p class="muted small">Template para adicionar indicadores novos: consulte <code>INDICADORES_PADRAO</code> em <code>analysis.py</code> — basta criar a função de voto <code>_vote_*</code> e registrar com id, nome, descrição e peso.</p>
+      <label class="indicator-toggle votos-toggle">
+        <input type="checkbox" id="use-votes" />
+        <div class="ind-toggle-text">
+          <strong>Filtrar o sinal pelos votos dos indicadores</strong>
+          <small>Quando ativo, o sinal da estratégia vira AGUARDAR se os indicadores ativos votarem no sentido contrário (fonte única da verdade).</small>
+        </div>
+      </label>
       <div class="indicators-grid" id="indicators-grid"></div>
     </div>
   </section>

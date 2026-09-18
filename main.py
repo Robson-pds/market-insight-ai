@@ -320,7 +320,7 @@ def trade_relatorio(periodo: str = "dia"):
 
 
 # ===========================================================================
-# Indicadores (catálogo, ativação e percentual de acerto manual)
+# Indicadores e parâmetros de estratégia
 # ===========================================================================
 class IndicadoresRequest(BaseModel):
     ativos: list[str]
@@ -339,24 +339,47 @@ def indicators_salvar(request: IndicadoresRequest):
     return {"ok": True, "message": msg, "indicadores": analysis.listar_indicadores()}
 
 
-class AcertoRequest(BaseModel):
-    taxa: float | None = None
+class EstrategiaParamsRequest(BaseModel):
+    strategy: str
+    params: dict
 
 
-@app.put("/api/accuracy/{expiry}")
-def accuracy_salvar(expiry: str, request: AcertoRequest):
-    ok, msg = analysis.set_override_acerto(expiry, request.taxa)
+@app.get("/api/strategy-params")
+def strategy_params_listar():
+    """Defaults + valores efetivos (com overrides) de todas as estratégias."""
+    usar_votos = str(trade_manager.get_config_valor("usar_votos", "0")) == "1"
+    return {
+        "defaults": analysis.STRATEGY_PARAMS_DEFAULT,
+        "atuais": {
+            strategy: analysis.get_params_estrategia(strategy)
+            for strategy in analysis.STRATEGY_PARAMS_DEFAULT
+        },
+        "usar_votos": usar_votos,
+    }
+
+
+@app.put("/api/strategy-params")
+def strategy_params_salvar(request: EstrategiaParamsRequest):
+    ok, msg = analysis.set_params_estrategia(request.strategy, request.params)
     if not ok:
         raise HTTPException(400, msg)
-    return {"ok": True, "message": msg}
+    return {
+        "ok": True,
+        "message": msg,
+        "atuais": {
+            request.strategy: analysis.get_params_estrategia(request.strategy)
+        },
+    }
 
 
-@app.delete("/api/accuracy/{expiry}")
-def accuracy_remover(expiry: str):
-    ok, msg = analysis.set_override_acerto(expiry, None)
-    if not ok:
-        raise HTTPException(400, msg)
-    return {"ok": True, "message": msg}
+class UsarVotosRequest(BaseModel):
+    usar_votos: bool
+
+
+@app.put("/api/strategy-params/votos")
+def strategy_params_votos(request: UsarVotosRequest):
+    analysis.set_usar_votos(request.usar_votos)
+    return {"ok": True, "message": "Filtro dos votos dos indicadores " + ("ativado." if request.usar_votos else "desativado.")}
 
 
 # ===========================================================================

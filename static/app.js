@@ -43,6 +43,7 @@ function switchView(view) {
   $("view-entrada").classList.toggle("hidden", view !== "entrada");
   $("view-config").classList.toggle("hidden", view !== "config");
   $("view-relatorio").classList.toggle("hidden", view !== "relatorio");
+  $("view-strategies").classList.toggle("hidden", view !== "strategies");
   if (view === "radar" && !$("radar-output").dataset.loaded) runRadar();
   if (view === "news") loadNews();
   if (view === "entrada") {
@@ -51,6 +52,7 @@ function switchView(view) {
   }
   if (view === "config") loadTradeConfig();
   if (view === "relatorio") loadReport();
+  if (view === "strategies") loadStrategiesView();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 $("gate-strategy-select").addEventListener("change", (event) => {
@@ -480,11 +482,45 @@ function renderSignal(expiry, signal) {
   const statusClass = displayStatus === "ATENÇÃO" ? "attention" : displayStatus === "SINAL MUITO PRÓXIMO" ? "near" : "";
   card.className = `expiry-card ${direction === "CALL" ? "call" : direction === "PUT" ? "put" : "neutral"} ${statusClass}`.trim();
   $( `signal-${expiry}` ).textContent = displayStatus;
+
+  // Percentual de acerto real (janela rolante) + últimos resultados
   const accuracy = signal.historical_accuracy;
-  const accuracyText = accuracy && accuracy.rate !== null
-    ? `Estimativa histórica: ${accuracy.rate.toFixed(1)}% (${accuracy.sample_size} casos)`
-    : "Estimativa histórica: sem amostra suficiente";
-  $( `reason-${expiry}` ).textContent = `${signal.reason || "Sem confirmação suficiente."} ${accuracyText}`;
+  let accuracyHtml;
+  let ultimosHtml = "";
+  if (accuracy && accuracy.rate !== null) {
+    accuracyHtml = `acerto: <b>${Number(accuracy.rate).toFixed(1)}%</b> (${accuracy.sample_size} sinais · ${accuracy.wins} certos)`;
+    ultimosHtml = `<div class="acc-streak">${(accuracy.ultimos || []).map((r) =>
+      `<span class="streak-dot ${r === "OK" ? "ok" : "erro"}" title="${r}">${r === "OK" ? "✔" : "✘"}</span>`
+    ).join("")}</div>`;
+  } else {
+    accuracyHtml = `acerto: <span class="muted">${accuracy?.label || "sem amostra suficiente"}</span>`;
+  }
+  $( `reason-${expiry}` ).innerHTML =
+    `${escapeHtml(signal.reason || "Sem confirmação suficiente.")} · ` + accuracyHtml + ultimosHtml;
+
+  // Votos dos indicadores ativos
+  const votesEl = $(`votes-${expiry}`);
+  const resumo = signal.resumo_votos;
+  const votos = signal.votos || [];
+  if (resumo && votos.length) {
+    votesEl.innerHTML = `
+      <div class="vote-summary">
+        <span class="vote-bull">▲ ${resumo.bulls} CALL</span>
+        <span class="vote-bear">▼ ${resumo.bears} PUT</span>
+        <span class="vote-neu">● ${resumo.neutros} neutros</span>
+        <span class="vote-conf">confiança ${Number(resumo.confianca || 0).toFixed(1)}%</span>
+      </div>
+      <div class="vote-list">
+        ${votos.map((v) =>
+          `<span class="vote-chip ${v.voto > 0 ? "chip-call" : v.voto < 0 ? "chip-put" : "chip-neu"}" title="${escapeHtml(v.motivo)}">${escapeHtml(v.nome)}</span>`
+        ).join("")}
+      </div>`;
+    votesEl.classList.remove("hidden");
+  } else {
+    votesEl.classList.add("hidden");
+    votesEl.innerHTML = "";
+  }
+
   $( `lock-${expiry}` ).textContent = signal.locked ? "SINAL FIXADO" : "NOVO SINAL";
   card.dataset.expiresAt = signal.expires_at || "";
   const expiresAt = Number(signal.expires_at);
@@ -1262,5 +1298,219 @@ function renderReport(d) {
 
 // Atualiza periodicamente o histórico quando a aba Entradas estiver visível
 setInterval(() => { if (!$("view-entrada").classList.contains("hidden")) loadEntries(); }, 15000);
+
+/* ============================================================
+   IA — segunda opinião
+============================================================ */
+$("btn-ai").addEventListener("click", consultarIA);
+
+async function consultarIA() {
+  const status = $("ai-status");
+  const resultado = $("ai-result");
+  const btn = $("btn-ai");
+  setStatus(status, "loading", "Consultando a IA… (pode levar alguns segundos)");
+  resultado.classList.add("hidden");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/ai/analise", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ativo: currentAsset,
+        strategy: selectedStrategy,
+        instrucao_extra: $("ai-instruction").value,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Falha na consulta");
+    if (d.erro) throw new Error(d.erro);
+    status.classList.add("hidden");
+    const cls = d.direcao === "CALL" ? "call" : d.direcao === "PUT" ? "put" : "neutral";
+    const riscos = (d.riscos || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+    resultado.innerHTML = `
+      <div class="ai-direcao ${cls}">${d.direcao} · confiança ${Number(d.confianca).toFixed(1)}%</div>
+      <p class="ai-just">${escapeHtml(d.justificativa || "Sem justificativa fornecida.")}</p>
+      ${riscos ? `<ul class="ai-riscos">${riscos}</ul>` : ""}
+      <small class="muted">Modelo: ${escapeHtml(d.modelo || "—")} · análise educacional, não é recomendação de investimento.</small>`;
+    resultado.classList.remove("hidden");
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ============================================================
+   Aba Estratégias — catálogo + parâmetros + indicadores ativos
+============================================================ */
+const paramLabels = {
+  adx_min: "ADX mínimo",
+  near_ema_atr: "Prox. da EMA (×ATR)",
+  rsi_call_min: "RSI CALL mín.",
+  rsi_call_max: "RSI CALL máx.",
+  rsi_put_min: "RSI PUT mín.",
+  rsi_put_max: "RSI PUT máx.",
+  min_score: "Score mínimo",
+  expansao_atr: "Expansão (×ATR)",
+  rsi_sobrevenda: "RSI sobrevenda",
+  rsi_sobrecompra: "RSI sobrecompra",
+  zona_atr: "Zona (×ATR)",
+  pavio_ratio: "Pavio × corpo",
+  rsi_call: "RSI CALL",
+  rsi_put: "RSI PUT",
+};
+
+async function loadStrategiesView() {
+  const grid = $("strategies-grid");
+  grid.innerHTML = Object.entries(strategyCatalog || {}).map(([key, item]) => {
+    const ativa = key === selectedStrategy;
+    return `
+      <div class="strategy-card-mini ${ativa ? "active" : ""}" data-strategy="${escapeHtml(key)}">
+        <div class="strategy-mini-head">
+          <strong>${escapeHtml(item.name)}</strong>
+          <div class="strategy-mini-actions">
+            <button class="btn-mini" data-act="usar">${ativa ? "✓ Ativa" : "Usar"}</button>
+            <button class="btn-mini" data-act="params" title="Ajustar limiares da estratégia">⚙</button>
+          </div>
+        </div>
+        <p>${escapeHtml(item.description)}</p>
+        <small class="muted">Indicadores: ${(item.indicadores || []).map(escapeHtml).join(", ")}</small>
+        <div class="strategy-params hidden" data-params="${escapeHtml(key)}"></div>
+      </div>`;
+  }).join("");
+  grid.querySelectorAll("[data-act='usar']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      selectedStrategy = btn.closest("[data-strategy]").dataset.strategy;
+      confirmStrategy(); // re-confirma e parte para o rastreamento com a nova estratégia
+    });
+  });
+  grid.querySelectorAll("[data-act='params']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const card = btn.closest("[data-strategy]");
+      const painel = card.querySelector("[data-params]");
+      painel.classList.toggle("hidden");
+      if (!painel.dataset.loaded) renderParams(painel, card.dataset.strategy);
+    });
+  });
+  await loadStrategyParams();
+  await loadIndicators();
+}
+
+async function loadStrategyParams() {
+  try {
+    const r = await fetch("/api/strategy-params");
+    const d = await r.json();
+    window.strategyParams = d;
+    $("use-votes").checked = !!d.usar_votos;
+    document.querySelectorAll("[data-params]").forEach((painel) => {
+      if (!painel.classList.contains("hidden")) renderParams(painel, painel.dataset.params);
+    });
+  } catch {}
+}
+
+function renderParams(painel, key) {
+  const atuais = window.strategyParams?.atuais?.[key] || {};
+  const defaults = window.strategyParams?.defaults?.[key] || {};
+  painel.dataset.loaded = "true";
+  const campos = Object.keys(defaults).map((chave) => `
+    <label class="param-field">
+      <span>${escapeHtml(paramLabels[chave] || chave)}</span>
+      <input type="number" step="any" data-param="${escapeHtml(chave)}" value="${atuais[chave] ?? defaults[chave]}" />
+    </label>`).join("");
+  painel.innerHTML = `
+    <div class="param-grid">${campos}</div>
+    <button class="btn-mini" data-save-params="${escapeHtml(key)}">Salvar parâmetros</button>
+    <span class="params-status muted small"></span>`;
+  painel.querySelector("[data-save-params]").addEventListener("click", () => saveParams(key, painel));
+}
+
+async function saveParams(key, painel) {
+  const params = {};
+  painel.querySelectorAll("[data-param]").forEach((input) => {
+    params[input.dataset.param] = parseFloat(input.value);
+  });
+  const status = painel.querySelector(".params-status");
+  status.textContent = "Salvando…";
+  try {
+    const r = await fetch("/api/strategy-params", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategy: key, params }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || d.detail || "Falha ao salvar");
+    window.strategyParams.atuais[key] = d.atuais[key];
+    status.textContent = "✓ " + d.message;
+    setTimeout(() => { status.textContent = ""; }, 2500);
+    loadAnalysis(true); // recalcula com os novos limiares
+  } catch (e) {
+    status.textContent = "✗ " + e.message;
+  }
+}
+
+$("use-votes").addEventListener("change", async (event) => {
+  try {
+    await fetch("/api/strategy-params/votos", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usar_votos: event.target.checked }),
+    });
+    loadAnalysis(true);
+  } catch {}
+});
+
+async function loadIndicators() {
+  try {
+    const r = await fetch("/api/indicators");
+    const d = await r.json();
+    window.indicatorsCatalog = d.indicadores || [];
+    renderIndicators();
+  } catch {}
+}
+
+function renderIndicators() {
+  const grid = $("indicators-grid");
+  grid.innerHTML = "";
+  (window.indicatorsCatalog || []).forEach((ind) => {
+    const label = document.createElement("label");
+    label.className = `indicator-toggle${ind.ativo ? " active" : ""}`;
+    label.innerHTML = `
+      <input type="checkbox" data-ind="${escapeHtml(ind.id)}" ${ind.ativo ? "checked" : ""} />
+      <div class="ind-toggle-text">
+        <strong>${escapeHtml(ind.nome)}</strong>
+        <small>${escapeHtml(ind.descricao)}</small>
+      </div>
+      <span class="ind-peso">peso ${ind.peso}</span>`;
+    label.querySelector("input").addEventListener("change", () => {
+      label.classList.toggle("active", label.querySelector("input").checked);
+    });
+    grid.appendChild(label);
+  });
+}
+
+async function saveIndicators() {
+  const ativos = Array.from(document.querySelectorAll("#indicators-grid input[type=checkbox]:checked"))
+    .map((input) => input.dataset.ind);
+  const status = $("strategies-status");
+  setStatus(status, "loading", "Salvando indicadores…");
+  try {
+    const r = await fetch("/api/indicators", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ativos }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || d.detail || "Falha ao salvar");
+    window.indicatorsCatalog = d.indicadores;
+    renderIndicators();
+    setStatus(status, "", d.message + " A análise será recalculada.");
+    setTimeout(() => status.classList.add("hidden"), 3000);
+    loadAnalysis(true); // força recálculo com os novos indicadores
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  }
+}
+
+$("btn-indicators-save").addEventListener("click", saveIndicators);
 
 boot();

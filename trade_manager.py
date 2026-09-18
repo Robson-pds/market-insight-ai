@@ -11,7 +11,9 @@ Persistência local em SQLite (market.db). Sempre em pt-BR.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -20,11 +22,52 @@ from pathlib import Path
 
 import iq_service
 
-DB_PATH = Path(__file__).resolve().parent / "market.db"
+
+def _dir_gravavel(diretorio: Path) -> bool:
+    try:
+        diretorio.mkdir(parents=True, exist_ok=True)
+        sonda = diretorio / ".gravavel_probe"
+        sonda.touch()
+        sonda.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def _resolver_db_path() -> str:
+    """Escolhe o local do SQLite conforme o ambiente.
+
+    - MARKET_DB_PATH definida → usa esse caminho (ou ':memory:');
+    - diretório do projeto gravável (uso local) → 'market.db' ao lado do código;
+    - ambiente serverless/read-only (ex.: Vercel) → '/tmp/market.db' (efêmero);
+    - sem nenhum local gravável → SQLite em memória (efêmero por processo).
+    """
+    env = os.getenv("MARKET_DB_PATH")
+    if env:
+        return ":memory:" if env.strip().lower() == ":memory:" else os.path.abspath(env)
+    candidato = Path(__file__).resolve().parent / "market.db"
+    if _dir_gravavel(candidato.parent):
+        return str(candidato)
+    tmp = Path(tempfile.gettempdir()) / "market.db"
+    if _dir_gravavel(tmp.parent):
+        print("[trade] diretório do projeto não gravável; usando", tmp)
+        return str(tmp)
+    print("[trade] sem armazenamento persistente; usando SQLite em memória")
+    return ":memory:"
+
+
+def _ambiente_serverless() -> bool:
+    """Detecta ambiente serverless (Vercel, etc.) para desligar worker/execução."""
+    return os.getenv("VERCEL") == "1" or os.getenv("SERVERLESS") == "1"
+
+
+DB_PATH = _resolver_db_path()
+_MEM_CONN: sqlite3.Connection | None = None
 
 _LOCK = threading.RLock()
 _WORKER_THREAD: threading.Thread | None = None
 _APURACAO_EM_ANDAMENTO: set[int] = set()
+_BD_INICIALIZADO = False
 
 DEFAULTS = {
     "conta": "PRACTICE",
@@ -44,7 +87,23 @@ STATUS_EDITAVEIS = ("ABERTA", "WIN", "LOSS", "EMPATE", "CANCELADA")
 
 @contextmanager
 def _db():
-    """Conexão SQLite com commit automático e fechamento garantido."""
+    """Conexão SQLite com commit automático e fechamento garantido.
+
+    No modo ':memory:' mantém UMA conexão única (compartilhada entre fios),
+    já que cada conexão em memória seria um banco separado.
+    """
+    if DB_PATH == ":memory:":
+        global _MEM_CONN
+        if _MEM_CONN is None:
+            _MEM_CONN = sqlite3.connect(":memory:", check_same_thread=False)
+            _MEM_CONN.row_factory = sqlite3.Row
+        try:
+            yield _MEM_CONN
+            _MEM_CONN.commit()
+        except Exception:
+            _MEM_CONN.rollback()
+            raise
+        return
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     try:
@@ -52,6 +111,18 @@ def _db():
         conn.commit()
     finally:
         conn.close()
+
+
+def _garantir_bd() -> None:
+    """Inicializa o banco uma única vez quando necessário (lazy init)."""
+    global _BD_INICIALIZADO
+    if _BD_INICIALIZADO:
+        return
+    with _LOCK:
+        if not _BD_INICIALIZADO:
+            _init_db()
+            # Se outro módulo já criou via iniciar(), apenas sincroniza a flag
+            _BD_INICIALIZADO = True
 
 
 def _init_db() -> None:
@@ -104,6 +175,7 @@ def _init_db() -> None:
 # Configurações
 # ---------------------------------------------------------------------------
 def get_config() -> dict:
+    _garantir_bd()
     with _LOCK, _db() as conn:
         rows = conn.execute("SELECT chave, valor FROM configuracao").fetchall()
     config = {row["chave"]: row["valor"] for row in rows}
@@ -115,6 +187,16 @@ def get_config() -> dict:
 def get_config_valor(chave: str, padrao=None):
     config = get_config()
     return config.get(chave, padrao)
+
+
+def set_config_raw(chave: str, valor) -> None:
+    """Grava uma chave de configuração arbitrária (ex.: indicadores, acerto)."""
+    _garantir_bd()
+    with _LOCK, _db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO configuracao (chave, valor) VALUES (?, ?)",
+            (chave, str(valor)),
+        )
 
 
 def _num(valor, padrao: float) -> float:
@@ -250,6 +332,7 @@ def _recalcular_estado(entradas_fechadas: list[sqlite3.Row]) -> dict:
 
 
 def _entradas_fechadas() -> list[sqlite3.Row]:
+    _garantir_bd()
     with _LOCK, _db() as conn:
         return conn.execute(
             "SELECT * FROM entradas ORDER BY id ASC"
@@ -298,6 +381,7 @@ def listar_entradas(periodo: str = "dia") -> list[dict]:
     if periodo not in PERIODOS:
         raise ValueError(f"Período inválido: {periodo}")
     inicio = _inicio_periodo(periodo).isoformat(sep=" ")
+    _garantir_bd()
     with _LOCK, _db() as conn:
         rows = conn.execute(
             "SELECT * FROM entradas WHERE criado_em >= ? ORDER BY id DESC",
@@ -431,6 +515,7 @@ def criar_entrada(
 
 
 def buscar_entrada(entrada_id: int) -> sqlite3.Row | None:
+    _garantir_bd()
     with _LOCK, _db() as conn:
         return conn.execute(
             "SELECT * FROM entradas WHERE id = ?", (entrada_id,)
@@ -600,16 +685,22 @@ def _worker() -> None:
 
 
 def iniciar() -> None:
-    """Inicializa o banco, aplica a conta configurada e liga o worker."""
-    global _WORKER_THREAD
+    """Inicializa o banco, aplica a conta configurada e liga o worker.
+
+    Em ambiente serverless (Vercel etc.) o worker de apuração em background
+    não é iniciado (não há processo persistente) — entradas executadas na IQ
+    Option ficam disponíveis apenas no uso local.
+    """
+    global _WORKER_THREAD, _BD_INICIALIZADO
     with _LOCK:
         _init_db()
+        _BD_INICIALIZADO = True
         conta = get_config_valor("conta", "PRACTICE")
         iq_service.set_account_type(conta)
-        if _WORKER_THREAD is None or not _WORKER_THREAD.is_alive():
+        if not _ambiente_serverless() and (_WORKER_THREAD is None or not _WORKER_THREAD.is_alive()):
             _WORKER_THREAD = threading.Thread(target=_worker, daemon=True)
             _WORKER_THREAD.start()
-        print("[trade] módulo de entradas iniciado (SQLite: market.db)")
+        print(f"[trade] módulo de entradas iniciado (SQLite: {DB_PATH})")
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import pandas as pd
 
 import iq_service
 import news_service
+import trade_manager
 
 
 # Timeframes em segundos (o que a IQ Option usa internamente)
@@ -25,31 +26,64 @@ STRATEGIES = {
         "name": "Retração na tendência",
         "description": "Busca uma correção até a média em uma tendência confirmada.",
         "max_score": 4,
+        "indicadores": ["EMA20/EMA50", "ADX", "RSI", "candle de rejeição"],
     },
     "breakout": {
         "name": "Rompimento de faixa",
         "description": "Exige fechamento além da máxima ou mínima recente com expansão de volatilidade.",
         "max_score": 3,
+        "indicadores": ["máxima/mínima de 20 candles", "ATR", "candle de expansão"],
     },
     "mean_reversion": {
         "name": "Reversão à média",
         "description": "Procura exaustão nas bandas e confirmação de retorno pelo RSI.",
         "max_score": 3,
+        "indicadores": ["Bollinger", "RSI", "reversão do RSI"],
     },
     "support_resistance": {
         "name": "Suporte e resistência",
         "description": "Procura rejeição clara em zonas extremas recentes.",
         "max_score": 3,
+        "indicadores": ["zona de 20 candles", "pavio", "candle de rejeição"],
     },
     "momentum": {
         "name": "Momentum",
         "description": "Exige alinhamento de médias, MACD e força direcional.",
         "max_score": 4,
+        "indicadores": ["EMA9/EMA21", "MACD", "ADX", "RSI"],
     },
 }
 
 _SIGNAL_CACHE: dict[tuple[str, str, str], dict] = {}
-MIN_ACCURACY_SAMPLE = 20
+MIN_ACCURACY_SAMPLE = 15     # amostra mínima para publicar o percentual
+ACCURACY_WINDOW = 40         # janela rolante: últimos N sinais avaliados
+
+# Parâmetros configuráveis por estratégia (limiares usados em _strategy_signal).
+# Ex.: adx_min, tolerâncias de RSI, zonas de ATR, min_score. Sem overrides,
+# valem estes valores padrão (iguais aos originais do código).
+STRATEGY_PARAMS_DEFAULT = {
+    "trend_pullback": {
+        "adx_min": 20, "near_ema_atr": 0.8,
+        "rsi_call_min": 45, "rsi_call_max": 65,
+        "rsi_put_min": 35, "rsi_put_max": 55,
+        "min_score": 3,
+    },
+    "breakout": {
+        "expansao_atr": 1.1, "min_score": 2,
+    },
+    "mean_reversion": {
+        "rsi_sobrevenda": 35, "rsi_sobrecompra": 65, "min_score": 2,
+    },
+    "support_resistance": {
+        "zona_atr": 0.15, "pavio_ratio": 1.2, "min_score": 2,
+    },
+    "momentum": {
+        "adx_min": 22, "rsi_call": 52, "rsi_put": 48, "min_score": 3,
+    },
+}
+
+# Cache de curta duração dos parâmetros efetivos por estratégia
+_PARAMS_CACHE: dict[str, tuple[float, dict]] = {}
 
 
 def candles_to_df(candles: list[dict]) -> pd.DataFrame:
@@ -176,7 +210,11 @@ def _signal(direction: str, score: int, reason: str, indicators: list[str], min_
 
 
 def _strategy_signal(df: pd.DataFrame, strategy: str) -> dict:
-    """Aplica uma estrategia isolada; indicadores de outras estrategias nao votam."""
+    """Aplica uma estrategia isolada; indicadores de outras estrategias nao votam.
+
+    Limiares são lidos dos parâmetros configuráveis (STRATEGY_PARAMS_DEFAULT +
+    overrides persistidos via /api/strategy-params).
+    """
     if len(df) < 60:
         return _signal("AGUARDAR", 0, "Dados insuficientes para esta estrategia.", [])
     row, prev = df.iloc[-1], df.iloc[-2]
@@ -184,51 +222,57 @@ def _strategy_signal(df: pd.DataFrame, strategy: str) -> dict:
     atr = float(row["ATR"])
     if not np.isfinite(atr) or atr <= 0:
         return _signal("AGUARDAR", 0, "Volatilidade invalida ou insuficiente.", [])
+    p = get_params_estrategia(strategy)
 
     if strategy == "trend_pullback":
-        up = row["EMA20"] > row["EMA50"] and row["ADX"] >= 20
-        down = row["EMA20"] < row["EMA50"] and row["ADX"] >= 20
-        near_ema = abs(close - row["EMA20"]) <= atr * 0.8
-        call_score = sum((up, near_ema, 45 <= row["RSI"] <= 65, close > row["Open"]))
-        put_score = sum((down, near_ema, 35 <= row["RSI"] <= 55, close < row["Open"]))
-        call = call_score >= 3 and call_score > put_score
-        put = put_score >= 3 and put_score > call_score
+        up = row["EMA20"] > row["EMA50"] and row["ADX"] >= p["adx_min"]
+        down = row["EMA20"] < row["EMA50"] and row["ADX"] >= p["adx_min"]
+        near_ema = abs(close - row["EMA20"]) <= atr * p["near_ema_atr"]
+        call_score = sum((up, near_ema, p["rsi_call_min"] <= row["RSI"] <= p["rsi_call_max"], close > row["Open"]))
+        put_score = sum((down, near_ema, p["rsi_put_min"] <= row["RSI"] <= p["rsi_put_max"], close < row["Open"]))
+        min_score = int(p["min_score"])
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
         direction = "CALL" if call else "PUT" if put else "AGUARDAR"
         score = max(call_score, put_score)
         return _signal(direction, score, "Retração confirmada na EMA20 dentro de tendência." if direction != "AGUARDAR" else "Retração sem confirmação suficiente.", ["EMA20/EMA50", "ADX", "RSI", "candle de rejeição"])
 
     if strategy == "breakout":
-        expansion = row["High"] - row["Low"] >= atr * 1.1
+        expansion = row["High"] - row["Low"] >= atr * p["expansao_atr"]
         call_score = sum((close > row["range_high_20"], expansion, close > row["Open"]))
         put_score = sum((close < row["range_low_20"], expansion, close < row["Open"]))
-        call = call_score >= 2 and call_score > put_score
-        put = put_score >= 2 and put_score > call_score
+        min_score = int(p["min_score"])
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
         direction = "CALL" if call else "PUT" if put else "AGUARDAR"
-        return _signal(direction, max(call_score, put_score), "Rompimento confirmado por evidências de faixa e expansão." if direction != "AGUARDAR" else "Rompimento ainda sem confirmação suficiente.", ["máxima/mínima de 20 candles", "ATR", "candle de expansão"], min_score=2)
+        return _signal(direction, max(call_score, put_score), "Rompimento confirmado por evidências de faixa e expansão." if direction != "AGUARDAR" else "Rompimento ainda sem confirmação suficiente.", ["máxima/mínima de 20 candles", "ATR", "candle de expansão"], min_score=min_score)
 
     if strategy == "mean_reversion":
-        call_score = sum((close <= row["BB_lower"], row["RSI"] < 35, row["RSI"] > prev["RSI"]))
-        put_score = sum((close >= row["BB_upper"], row["RSI"] > 65, row["RSI"] < prev["RSI"]))
-        call = call_score >= 2 and call_score > put_score
-        put = put_score >= 2 and put_score > call_score
+        call_score = sum((close <= row["BB_lower"], row["RSI"] < p["rsi_sobrevenda"], row["RSI"] > prev["RSI"]))
+        put_score = sum((close >= row["BB_upper"], row["RSI"] > p["rsi_sobrecompra"], row["RSI"] < prev["RSI"]))
+        min_score = int(p["min_score"])
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
         direction = "CALL" if call else "PUT" if put else "AGUARDAR"
-        return _signal(direction, max(call_score, put_score), "Reversão confirmada por evidências de banda e RSI." if direction != "AGUARDAR" else "Reversão sem confirmação suficiente.", ["Bollinger", "RSI", "reversão do RSI"], min_score=2)
+        return _signal(direction, max(call_score, put_score), "Reversão confirmada por evidências de banda e RSI." if direction != "AGUARDAR" else "Reversão sem confirmação suficiente.", ["Bollinger", "RSI", "reversão do RSI"], min_score=min_score)
 
     if strategy == "support_resistance":
         support = df["Low"].iloc[-21:-1].min()
         resistance = df["High"].iloc[-21:-1].max()
-        call_score = sum((row["Low"] <= support + atr * 0.15, row["lower_wick"] > row["body"] * 1.2, close > row["Open"]))
-        put_score = sum((row["High"] >= resistance - atr * 0.15, row["upper_wick"] > row["body"] * 1.2, close < row["Open"]))
-        call = call_score >= 2 and call_score > put_score
-        put = put_score >= 2 and put_score > call_score
+        min_score = int(p["min_score"])
+        call_score = sum((row["Low"] <= support + atr * p["zona_atr"], row["lower_wick"] > row["body"] * p["pavio_ratio"], close > row["Open"]))
+        put_score = sum((row["High"] >= resistance - atr * p["zona_atr"], row["upper_wick"] > row["body"] * p["pavio_ratio"], close < row["Open"]))
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
         direction = "CALL" if call else "PUT" if put else "AGUARDAR"
-        return _signal(direction, max(call_score, put_score), "Rejeição confirmada por evidências de zona e candle." if direction != "AGUARDAR" else "Rejeição sem confirmação suficiente.", ["zona de 20 candles", "pavio", "candle de rejeição"], min_score=2)
+        return _signal(direction, max(call_score, put_score), "Rejeição confirmada por evidências de zona e candle." if direction != "AGUARDAR" else "Rejeição sem confirmação suficiente.", ["zona de 20 candles", "pavio", "candle de rejeição"], min_score=min_score)
 
     if strategy == "momentum":
-        call_score = sum((row["EMA9"] > row["EMA21"], row["MACD"] > row["MACD_signal"], row["ADX"] >= 22, row["RSI"] > 52))
-        put_score = sum((row["EMA9"] < row["EMA21"], row["MACD"] < row["MACD_signal"], row["ADX"] >= 22, row["RSI"] < 48))
-        call = call_score >= 3 and call_score > put_score
-        put = put_score >= 3 and put_score > call_score
+        call_score = sum((row["EMA9"] > row["EMA21"], row["MACD"] > row["MACD_signal"], row["ADX"] >= p["adx_min"], row["RSI"] > p["rsi_call"]))
+        put_score = sum((row["EMA9"] < row["EMA21"], row["MACD"] < row["MACD_signal"], row["ADX"] >= p["adx_min"], row["RSI"] < p["rsi_put"]))
+        min_score = int(p["min_score"])
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
         direction = "CALL" if call else "PUT" if put else "AGUARDAR"
         score = max(call_score, put_score)
         return _signal(direction, score, "Momentum alinhado entre médias, MACD e ADX." if direction != "AGUARDAR" else "Momentum sem alinhamento suficiente.", ["EMA9/EMA21", "MACD", "ADX", "RSI"])
@@ -247,26 +291,84 @@ def _proximity(score: int, max_score: int = 4) -> dict:
     return {"label": label, "percent": round(ratio * 100, 1)}
 
 
-def estimate_historical_accuracy(df: pd.DataFrame, strategy: str, horizon: int) -> dict:
-    """Estima acerto fora da amostra atual usando candles fechados anteriores."""
-    if len(df) < 80:
-        return {"rate": None, "sample_size": 0, "label": "Amostra insuficiente"}
-    wins = total = 0
-    start = max(60, len(df) - 160)
+def estimate_historical_accuracy(df: pd.DataFrame, strategy: str, horizon: int = 1) -> dict:
+    """Acerto real dos últimos sinais comparáveis (janela rolante).
+
+    Avalia os sinais que a estratégia teria emitido nos candles fechados
+    recentes e compara com o fechamento seguinte (mesmo critério de uma
+    entrada CALL/PUT). A janela é limitada aos últimos ACCURACY_WINDOW sinais,
+    então o percentual reage aos acertos/erros recentes — inclusive à vela
+    que acabou de fechar no sentido contrário ao sinal.
+    """
+    if len(df) < 40:
+        return {"rate": None, "sample_size": 0, "wins": 0, "ultimos": [], "label": "Amostra insuficiente"}
+    resultados: list[bool] = []
+    start = max(40, len(df) - ACCURACY_WINDOW - horizon)
     for end in range(start, len(df) - horizon + 1):
         decision = _strategy_signal(df.iloc[:end], strategy)
         if decision["signal"] not in ("CALL", "PUT"):
             continue
         entry = float(df["Close"].iloc[end - 1])
         exit_price = float(df["Close"].iloc[end + horizon - 1])
-        wins += int((decision["signal"] == "CALL" and exit_price > entry) or (decision["signal"] == "PUT" and exit_price < entry))
-        total += 1
+        acertou = (decision["signal"] == "CALL" and exit_price > entry) or (
+            decision["signal"] == "PUT" and exit_price < entry
+        )
+        resultados.append(acertou)
+
+    total = len(resultados)
     sufficient_sample = total >= MIN_ACCURACY_SAMPLE
+    wins = sum(1 for r in resultados if r)
+    ultimos = [("OK" if r else "ERRO") for r in reversed(resultados[-12:])]
     return {
         "rate": round(wins / total * 100, 1) if sufficient_sample else None,
         "sample_size": total,
-        "label": "Estimativa histórica; não garante o próximo resultado." if sufficient_sample else "Amostra insuficiente",
+        "wins": wins,
+        "ultimos": ultimos,
+        "label": "Acerto nos últimos sinais comparáveis; não garante o próximo resultado." if sufficient_sample else "Amostra insuficiente",
     }
+
+
+def set_params_estrategia(strategy: str, params: dict) -> tuple[bool, str]:
+    """Salva parâmetros customizados para uma estratégia (limiares, min_score)."""
+    if strategy not in STRATEGY_PARAMS_DEFAULT:
+        return False, f"Estratégia desconhecida: {strategy}"
+    for chave, valor in params.items():
+        if chave not in STRATEGY_PARAMS_DEFAULT[strategy]:
+            continue
+        try:
+            numero = float(valor)
+        except (TypeError, ValueError):
+            return False, f"Parâmetro '{chave}' inválido para {strategy}."
+        trade_manager.set_config_raw(f"sp_{strategy}_{chave}", f"{numero:.4g}")
+    _PARAMS_CACHE.pop(strategy, None)
+    return True, "Parâmetros da estratégia salvos."
+
+
+def get_params_estrategia(strategy: str) -> dict:
+    """Parâmetros efetivos da estratégia (overrides persistidos sobre defaults)."""
+    agora = time.time()
+    cached = _PARAMS_CACHE.get(strategy)
+    if cached and agora - cached[0] < 2.0:
+        return cached[1]
+    params = dict(STRATEGY_PARAMS_DEFAULT.get(strategy, {}))
+    for chave in params:
+        bruto = trade_manager.get_config_valor(f"sp_{strategy}_{chave}", None)
+        if bruto is not None and str(bruto).strip() != "":
+            try:
+                params[chave] = float(bruto)
+            except (TypeError, ValueError):
+                pass
+    _PARAMS_CACHE[strategy] = (agora, params)
+    return params
+
+
+def set_usar_votos(ativado: bool) -> None:
+    """Habilita/desabilita o filtro dos votos dos indicadores no sinal."""
+    trade_manager.set_config_raw("usar_votos", "1" if ativado else "0")
+
+
+def _usar_votos() -> bool:
+    return str(trade_manager.get_config_valor("usar_votos", "0")) == "1"
 
 
 # --------- Votos ---------
@@ -380,22 +482,148 @@ def _vote_williams(df, i):
     return 0, f"Williams %R {williams:.1f} neutro"
 
 
-# Peso relativo dos indicadores usados pelo motor legado de detalhamento.
-INDICATOR_WEIGHTS = {
-    "RSI (14)":       1.5,
-    "Stochastic":     1.3,
-    "Stoch RSI":      1.0,
-    "MACD":           1.5,
-    "EMA 5/10":       1.0,
-    "EMA 10/20":      1.0,
-    "Bollinger":      1.2,
-    "ADX / DI":       1.3,
-    "CCI":            0.8,
-    "Williams %R":    0.8,
-}
+# ===========================================================================
+# Registro declarativo de indicadores
+# ===========================================================================
+# Para adicionar um indicador novo:
+#   1) Escreva uma função `def _vote_seu(df, i) -> (voto, motivo)` que retorna
+#      +1 (CALL/alta), -1 (PUT/baixa) ou 0 (neutro) e um texto explicativo.
+#      Se precisar de colunas novas, use o campo `preparar` para calculá-las
+#      (recebe o DataFrame e retorna o mesmo DataFrame ampliado).
+#   2) Adicione um registro no INDICADORES_PADRAO abaixo com `id`, `nome`
+#      (rótulo exibido), `descricao`, `peso` e `votar`.
+#   3) Ative/desative pela aba Estratégias (ou via PUT /api/indicators).
+INDICADORES_PADRAO = [
+    {
+        "id": "rsi",
+        "nome": "RSI (14)",
+        "descricao": "Oscilador de momentum; sobrevenda/sobrecompra e viés direcional.",
+        "peso": 1.5,
+        "votar": _vote_rsi,
+    },
+    {
+        "id": "stoch",
+        "nome": "Stochastic",
+        "descricao": "Posição do preço na faixa recente, com cruzamentos.",
+        "peso": 1.3,
+        "votar": _vote_stoch,
+    },
+    {
+        "id": "stochrsi",
+        "nome": "Stoch RSI",
+        "descricao": "RSI dentro da própria faixa; extremos de sobrevenda/sobrecompra.",
+        "peso": 1.0,
+        "votar": _vote_stoch_rsi,
+    },
+    {
+        "id": "macd",
+        "nome": "MACD",
+        "descricao": "Convergência/divergência de médias com histograma.",
+        "peso": 1.5,
+        "votar": _vote_macd,
+    },
+    {
+        "id": "ema510",
+        "nome": "EMA 5/10",
+        "descricao": "Médias curtas: tendência de curtíssimo prazo.",
+        "peso": 1.0,
+        "votar": lambda d, i: _vote_ema(d, i, "EMA5", "EMA10"),
+    },
+    {
+        "id": "ema1020",
+        "nome": "EMA 10/20",
+        "descricao": "Médias médias: direção da tendência recente.",
+        "peso": 1.0,
+        "votar": lambda d, i: _vote_ema(d, i, "EMA10", "EMA20"),
+    },
+    {
+        "id": "bollinger",
+        "nome": "Bollinger",
+        "descricao": "Bandas de volatilidade; extremos sugerem reversão.",
+        "peso": 1.2,
+        "votar": _vote_bollinger,
+    },
+    {
+        "id": "adx",
+        "nome": "ADX / DI",
+        "descricao": "Força direcional da tendência (+DI/−DI).",
+        "peso": 1.3,
+        "votar": _vote_adx,
+    },
+    {
+        "id": "cci",
+        "nome": "CCI",
+        "descricao": "Desvio do preço típico em relação à média; extremos.",
+        "peso": 0.8,
+        "votar": _vote_cci,
+    },
+    {
+        "id": "williams",
+        "nome": "Williams %R",
+        "descricao": "Oscilador de momento; extremos de sobrevenda/sobrecompra.",
+        "peso": 0.8,
+        "votar": _vote_williams,
+    },
+]
+
+_INDICADORES_POR_ID = {reg["id"]: reg for reg in INDICADORES_PADRAO}
+
+
+def listar_indicadores() -> list[dict]:
+    """Catálogo de indicadores com o status ativo (persistido no SQLite)."""
+    ativos = set(_ids_indicadores_ativos())
+    return [
+        {
+            "id": reg["id"],
+            "nome": reg["nome"],
+            "descricao": reg["descricao"],
+            "peso": reg["peso"],
+            "ativo": reg["id"] in ativos,
+        }
+        for reg in INDICADORES_PADRAO
+    ]
+
+
+def _ids_indicadores_ativos() -> list[str]:
+    bruto = trade_manager.get_config_valor("indicadores_ativos", "")
+    ids = [parte.strip() for parte in str(bruto or "").split(",") if parte.strip()]
+    validos = [i for i in ids if i in _INDICADORES_POR_ID]
+    # Se nada foi configurado ainda, todos os indicadores participam
+    return validos or [reg["id"] for reg in INDICADORES_PADRAO]
+
+
+def set_indicadores_ativos(ids: list[str]) -> tuple[bool, str]:
+    """Persiste a lista de indicadores ativos; ids inválidos são ignorados."""
+    validos = []
+    for i in ids:
+        i = (i or "").strip().lower()
+        if i in _INDICADORES_POR_ID and i not in validos:
+            validos.append(i)
+    if not validos:
+        return False, "Nenhum indicador válido foi informado."
+    trade_manager.set_config_raw("indicadores_ativos", ",".join(validos))
+    return True, "Indicadores ativos salvos."
+
+
+def _votar(df: pd.DataFrame, i: int) -> list[dict]:
+    """Aplica os indicadores ATIVOS no candle i e devolve os votos."""
+    votos = []
+    for reg in INDICADORES_PADRAO:
+        if reg["id"] not in _ids_indicadores_ativos():
+            continue
+        try:
+            fn_preparar = reg.get("preparar")
+            if fn_preparar:
+                df = fn_preparar(df)
+            voto, motivo = reg["votar"](df, i)
+        except Exception:
+            voto, motivo = 0, f"{reg['nome']} indisponível"
+        votos.append({"id": reg["id"], "name": reg["nome"], "vote": voto, "reason": motivo, "peso": reg["peso"]})
+    return votos
+
 
 # Quórum mínimo para o sinal ser considerado acionável
-MIN_DIRECTIONAL_VOTES = 5    # pelo menos 5 dos 10 indicadores precisam votar
+MIN_DIRECTIONAL_VOTES = 5    # pelo menos 5 dos indicadores precisam votar
 MIN_MARGIN = 3               # diferença mínima entre bulls e bears
 MIN_COVERAGE = 60.0          # 60% dos indicadores precisam ter opinião
 
@@ -404,8 +632,8 @@ def aggregate_votes(votes):
     total = len(votes)
 
     # Soma ponderada dos votos
-    weighted_bull = sum(INDICATOR_WEIGHTS.get(v["name"], 1.0) for v in votes if v["vote"] == 1)
-    weighted_bear = sum(INDICATOR_WEIGHTS.get(v["name"], 1.0) for v in votes if v["vote"] == -1)
+    weighted_bull = sum(v.get("peso", 1.0) for v in votes if v["vote"] == 1)
+    weighted_bear = sum(v.get("peso", 1.0) for v in votes if v["vote"] == -1)
     bulls = sum(1 for v in votes if v["vote"] == 1)
     bears = sum(1 for v in votes if v["vote"] == -1)
     neutrals = sum(1 for v in votes if v["vote"] == 0)
@@ -476,17 +704,7 @@ def analyze_timeframe(df: pd.DataFrame, tf_key: str) -> dict | None:
     df = compute_indicators(df.copy())
     i = len(df) - 1
 
-    votes = []
-    for name, fn in [
-        ("RSI (14)", _vote_rsi), ("Stochastic", _vote_stoch),
-        ("Stoch RSI", _vote_stoch_rsi), ("MACD", _vote_macd),
-        ("EMA 5/10", lambda d, i: _vote_ema(d, i, "EMA5", "EMA10")),
-        ("EMA 10/20", lambda d, i: _vote_ema(d, i, "EMA10", "EMA20")),
-        ("Bollinger", _vote_bollinger), ("ADX / DI", _vote_adx),
-        ("CCI", _vote_cci), ("Williams %R", _vote_williams),
-    ]:
-        v, reason = fn(df, i)
-        votes.append({"name": name, "vote": v, "reason": reason})
+    votes = _votar(df, i)
 
     agg = aggregate_votes(votes)
     last = df.iloc[-1]
@@ -595,6 +813,36 @@ def analyze_asset(asset: str, strategy: str = "trend_pullback") -> dict:
             decision = _signal("AGUARDAR", 0, "Entrada suspensa: calendário econômico indisponível.", [])
         elif news["blocked"]:
             decision = _signal("AGUARDAR", 0, "Entrada bloqueada por notícia de alto impacto.", [event["title"] for event in news["events"]])
+
+        # Votos dos indicadores ativos (fonte única: detalhamento, IA e,
+        # opcionalmente, filtro do sinal quando "usar_votos" está habilitado)
+        votos = _votar(df, len(df) - 1) if not df.empty else []
+        if votos:
+            agregado = aggregate_votes(votos)
+            if (
+                _usar_votos()
+                and decision["signal"] in ("CALL", "PUT")
+                and agregado["direction"] in ("CALL", "PUT")
+                and agregado["direction"] != decision["signal"]
+            ):
+                decision = _signal(
+                    "AGUARDAR",
+                    decision["score"],
+                    f"Conflito: a estratégia sugere {decision['signal']}, mas os indicadores votam "
+                    f"{agregado['direction']} ({agregado['bulls']}x{agregado['bears']}). Aguardando alinhamento.",
+                    [v["nome"] for v in votos],
+                )
+            decision["votos"] = [
+                {"nome": v["name"], "voto": v["vote"], "motivo": v["reason"]}
+                for v in votos
+            ]
+            decision["resumo_votos"] = {
+                "bulls": agregado["bulls"],
+                "bears": agregado["bears"],
+                "neutros": agregado["neutrals"],
+                "total": agregado["total"],
+                "confianca": agregado["confidence"],
+            }
 
         # Alinha o vencimento ao proximo fechamento de vela da IQ Option.
         # Os timeframes sao contados a partir do epoch Unix: 1m, 5m e 15m.

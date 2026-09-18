@@ -8,17 +8,25 @@ import iq_service
 import analysis
 import news_service
 import trade_manager
+import ai_advisor
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Inicializa o módulo de entradas (config + worker de apuração) antes do
     # connect, para que a conta configurada seja aplicada na conexão.
-    trade_manager.iniciar()
+    # Nenhuma falha aqui pode derrubar a aplicação (importante na Vercel).
+    try:
+        trade_manager.iniciar()
+    except Exception as exc:
+        print(f"[startup] aviso: falha ao iniciar o módulo de entradas: {exc}")
     # Tenta conectar à IQ Option na inicialização
     print("[startup] Conectando à IQ Option...")
-    ok, msg = iq_service.connect()
-    print(f"[startup] {msg}")
+    try:
+        ok, msg = iq_service.connect()
+        print(f"[startup] {msg}")
+    except Exception as exc:
+        print(f"[startup] aviso: falha na conexão IQ Option: {exc}")
     yield
     # Shutdown (opcional): limpar streams
     print("[shutdown] Encerrando...")
@@ -316,3 +324,90 @@ def trade_relatorio(periodo: str = "dia"):
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(500, f"Erro no relatório: {exc}")
+
+
+# ===========================================================================
+# Indicadores e parâmetros de estratégia
+# ===========================================================================
+class IndicadoresRequest(BaseModel):
+    ativos: list[str]
+
+
+@app.get("/api/indicators")
+def indicators_listar():
+    return {"indicadores": analysis.listar_indicadores()}
+
+
+@app.put("/api/indicators")
+def indicators_salvar(request: IndicadoresRequest):
+    ok, msg = analysis.set_indicadores_ativos(request.ativos)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "message": msg, "indicadores": analysis.listar_indicadores()}
+
+
+class EstrategiaParamsRequest(BaseModel):
+    strategy: str
+    params: dict
+
+
+@app.get("/api/strategy-params")
+def strategy_params_listar():
+    """Defaults + valores efetivos (com overrides) de todas as estratégias."""
+    usar_votos = str(trade_manager.get_config_valor("usar_votos", "0")) == "1"
+    return {
+        "defaults": analysis.STRATEGY_PARAMS_DEFAULT,
+        "atuais": {
+            strategy: analysis.get_params_estrategia(strategy)
+            for strategy in analysis.STRATEGY_PARAMS_DEFAULT
+        },
+        "usar_votos": usar_votos,
+    }
+
+
+@app.put("/api/strategy-params")
+def strategy_params_salvar(request: EstrategiaParamsRequest):
+    ok, msg = analysis.set_params_estrategia(request.strategy, request.params)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {
+        "ok": True,
+        "message": msg,
+        "atuais": {
+            request.strategy: analysis.get_params_estrategia(request.strategy)
+        },
+    }
+
+
+class UsarVotosRequest(BaseModel):
+    usar_votos: bool
+
+
+@app.put("/api/strategy-params/votos")
+def strategy_params_votos(request: UsarVotosRequest):
+    analysis.set_usar_votos(request.usar_votos)
+    return {"ok": True, "message": "Filtro dos votos dos indicadores " + ("ativado." if request.usar_votos else "desativado.")}
+
+
+# ===========================================================================
+# IA — análise de entrada com modelo de linguagem
+# ===========================================================================
+class AiAnaliseRequest(BaseModel):
+    ativo: str
+    strategy: str = "trend_pullback"
+    instrucao_extra: str | None = None
+
+
+@app.post("/api/ai/analise")
+def ai_analise(request: AiAnaliseRequest):
+    """Envia parâmetros + lógica atuais para a IA e devolve a análise."""
+    _ensure_connected()
+    if not ai_advisor.disponivel():
+        raise HTTPException(503, "OPENAI_API_KEY não configurada no .env.")
+    strategy = request.strategy
+    if strategy not in analysis.STRATEGIES:
+        raise HTTPException(400, f"Estratégia desconhecida: {strategy}")
+    ativo = request.ativo.upper().replace("=X", "")
+    if ativo not in iq_service.list_assets():
+        raise HTTPException(404, f"Ativo desconhecido: {ativo}")
+    return ai_advisor.consultar(ativo, strategy, request.instrucao_extra or "")

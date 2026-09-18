@@ -36,6 +36,19 @@ indicadores técnicos, contexto de múltiplos timeframes e calendário econômic
   (WIN/LOSS/EMPATE com o valor ganho/perdido).
 - **Relatório de entradas e ganhos/perdas** por dia, semana, mês ou ano:
   totais, taxa de acerto, ganho/perda bruta, líquido e resultado por dia.
+- **Aba Estratégias**: catálogo das estratégias (descrição, indicadores usados,
+  troca rápida), **parâmetros ajustáveis por estratégia** (limiares de ADX/RSI/
+  ATR e score mínimo) e **ativação/desativação de indicadores** que participam
+  dos votos de detalhamento e da consulta à IA. Opcionalmente, os votos dos
+  indicadores podem **filtrar o sinal** (vira AGUARDAR se indicarem o contrário).
+- **Percentual de acerto real (janela rolante)**: calculado sobre os últimos
+  sinais comparáveis nos candles fechados — reage aos acertos/erros recentes,
+  inclusive quando a vela vai contra o sinal — e exibe a sequência dos últimos
+  resultados (✔/✘) em cada expiração.
+- **IA — segunda opinião**: botão na aba Análise que envia os parâmetros
+  atuais (sinais, votos dos indicadores, notícias) para um modelo de
+  linguagem (OpenAI ou endpoint compatível) e devolve direção, confiança,
+  justificativa e riscos em pt-BR.
 - Gráfico interativo com preço, EMA21, SMA50 e Bandas de Bollinger.
 - Interface dark-mode responsiva, pronta para uso local ou intranet.
 
@@ -77,6 +90,40 @@ docker compose up --build
 
 Acesse **http://localhost:8000**.
 
+## Rodando na Vercel (serverless)
+
+O projeto funciona na Vercel com **degradação automática** do que exige
+processo persistente:
+
+- **SQLite** com fallback de local: diretório do projeto (uso local) →
+  `/tmp/market.db` → memória (efêmero por instância). Definir
+  `MARKET_DB_PATH` força um caminho — foi esse arquivo em diretório
+  somente-leitura que causava o `500 FUNCTION_INVOCATION_FAILED`;
+- **Conexão IQ Option continua ativa** (candles/valor/análise em tempo real
+  funcionam, como já funcionavam);
+- o worker de apuração em background **não roda** no serverless (não há
+  processo persistente) — entradas executadas ficam ABERTA até você clicar
+  em "Apurar".
+
+**Passos:**
+
+1. No dashboard da Vercel, importe o repositório (Framework Preset:
+   `Other`/`Python` — o entrypoint `main:app` é detectado automaticamente).
+2. Em **Settings → Environment Variables**, adicione `IQ_EMAIL` e
+   `IQ_PASSWORD` (e `OPENAI_API_KEY` se quiser a IA) — esses são os "env"
+   usados em produção, enquanto o `.env` local é usado apenas localmente.
+3. Deploy.
+
+**Limitações do ambiente serverless:**
+
+- O histórico de entradas/configurações **não persiste** entre invocações
+  frias (arquivo efêmero). Para persistência na nuvem, a evolução é usar um
+  banco externo (ex.: Postgres/Supabase) — `trade_manager` foi isolado para
+  facilitar essa troca.
+- Execução de ordens e apuração automática dependem de processo/thread
+  persistente — **confiável apenas rodando local**. Na Vercel, use as
+  entradas mais como registro/relatório e clique em "Apurar" manualmente.
+
 ## Configuração (`.env`)
 
 > **Atenção:** o arquivo `.env` contém suas credenciais da IQ Option e NÃO
@@ -88,10 +135,44 @@ Acesse **http://localhost:8000**.
 | `IQ_EMAIL` | vazio | Email da conta IQ Option (demo ou real). |
 | `IQ_PASSWORD` | vazio | Senha da conta IQ Option. |
 | `IQ_ACCOUNT_TYPE` | `PRACTICE` | Conta usada nas operações: `PRACTICE` (demo) ou `REAL` (oficial). Também configurável na aba Configuração. |
-| `OPENAI_API_KEY` | vazio | Opcional. Se presente, o relatório narrativo é gerado por LLM. |
+| `OPENAI_API_KEY` | vazio | Opcional. Habilita o botão "🤖 IA — segunda opinião" na aba Análise. |
+| `AI_MODEL` | `gpt-4o-mini` | Modelo usado pela IA. |
+| `AI_BASE_URL` | vazio | Opcional. Endpoint compatível com a API OpenAI (ex.: Ollama/LM Studio). |
+| `MARKET_DB_PATH` | auto | Onde fica o SQLite (`market.db`). Use `:memory:` para forçar memória; na Vercel o padrão cai para `/tmp` (efêmero). |
 | `BIQUOTE_CALENDAR_URL` | `https://biquote.io/api/calendar/upcoming` | Endpoint público do calendário econômico Biquote. |
 | `HOST` | `127.0.0.1` | Host do servidor. Use `0.0.0.0` para expor na rede. |
 | `PORT` | `8000` | Porta HTTP. |
+
+## Como adicionar um indicador (template)
+
+Os indicadores vivem em `analysis.py`, no registro `INDICADORES_PADRAO`.
+Para criar um novo, siga o template:
+
+```python
+def _vote_meu_indicador(df, i):
+    valor = df["MINHA_COLUNA"].iloc[i]
+    if pd.isna(valor):
+        return 0, "Meu indicador sem dados"
+    if valor > 50:
+        return 1, f"Meu indicador {valor:.1f} — CALL"
+    if valor < 50:
+        return -1, f"Meu indicador {valor:.1f} — PUT"
+    return 0, "Meu indicador neutro"
+
+INDICADORES_PADRAO.append({
+    "id": "meu_indicador",            # id único (será persistido na ativação)
+    "nome": "Meu Indicador (50)",     # rótulo exibido na interface
+    "descricao": "O que ele mede e como vota.",
+    "peso": 1.0,                      # peso no voto ponderado
+    "votar": _vote_meu_indicador,     # retorna (voto, motivo)
+    # "preparar": fn_que_calcula_colunas,  # opcional: amplia o DataFrame
+})
+```
+
+Depois de salvo, o indicador aparece na aba **Estratégias** e pode ser
+ativado/desativado sem mexer em código. O cálculo das colunas base continua
+em `compute_indicators(df)` (se precisar de coluna nova, adicione lá ou use
+o campo opcional `preparar`).
 
 ## Endpoints
 
@@ -109,6 +190,12 @@ Acesse **http://localhost:8000**.
 - `POST /api/trade/entradas/{id}/apurar` — consulta o resultado na IQ Option.
 - `GET /api/trade/entradas?periodo=dia|semana|mes|ano` — histórico filtrado.
 - `GET /api/trade/relatorio?periodo=dia|semana|mes|ano` — resumo de entradas e ganhos/perdas.
+- `GET /api/indicators` — catálogo de indicadores com status ativo.
+- `PUT /api/indicators` — salva a lista de indicadores ativos `{"ativos": ["rsi", "macd"]}`.
+- `GET /api/strategy-params` — defaults e valores efetivos das estratégias + flag `usar_votos`.
+- `PUT /api/strategy-params` — salva parâmetros de uma estratégia `{"strategy", "params": {...}}`.
+- `PUT /api/strategy-params/votos` — liga/desliga o filtro dos votos `{"usar_votos": bool}`.
+- `POST /api/ai/analise` — consulta a IA `{"ativo", "strategy", "instrucao_extra?"}`.
 
 Exemplos de tickers: `PETR4.SA`, `VALE3.SA`, `ITUB4.SA`, `AAPL`, `MSFT`,
 `BTC-USD`, `ETH-USD`, `^BVSP`.

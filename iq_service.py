@@ -1,7 +1,7 @@
 """
 Serviço de conexão com a IQ Option via biblioteca iqair.
-Mantém uma instância global conectada e expõe métodos para candles.
-SOMENTE PARA USO EM CONTA DEMO (PRACTICE).
+Mantém uma instância global conectada e expõe métodos para candles,
+troca de conta (demo/oficial), compra de opções binárias e payout.
 """
 from __future__ import annotations
 
@@ -20,11 +20,21 @@ except Exception:
 IQ_EMAIL = os.getenv("IQ_EMAIL", "")
 IQ_PASSWORD = os.getenv("IQ_PASSWORD", "")
 
+# Conta usada nas operações: PRACTICE (demo) ou REAL (oficial).
+# O trade_manager aplica a conta salva na configuração ao iniciar.
+ACCOUNT_TYPE = os.getenv("IQ_ACCOUNT_TYPE", "PRACTICE").upper()
+if ACCOUNT_TYPE not in ("PRACTICE", "REAL"):
+    ACCOUNT_TYPE = "PRACTICE"
+
 _api: IQOptionClient | None = None
 _lock = threading.RLock()
 
 # Cache de streams ativos: {(asset, interval): True}
 _streams: dict[tuple[str, int], bool] = {}
+
+# Cache do payout por ativo (evita chamadas pesadas de get_all_init)
+_payout_cache: dict[str, dict] = {}
+_payout_cache_ts = 0.0
 
 
 def connect() -> tuple[bool, str]:
@@ -40,8 +50,11 @@ def connect() -> tuple[bool, str]:
             if not ok:
                 _api = None
                 return False, f"Falha: {reason}"
-            _api.change_balance("PRACTICE")
-            return True, "Conectado à conta PRACTICE"
+            ok_troca, msg = set_account_type(ACCOUNT_TYPE)
+            if not ok_troca:
+                _api = None
+                return False, msg
+            return True, f"Conectado à conta {ACCOUNT_TYPE}"
         except Exception as e:
             _api = None
             return False, f"Exceção: {e}"
@@ -64,16 +77,56 @@ def reconnect(email: str, password: str) -> tuple[bool, str]:
             ok, reason = client.connect()
             if not ok:
                 return False, f"Falha: {reason}"
-            client.change_balance("PRACTICE")
+            client.change_balance(ACCOUNT_TYPE)
             _api = client
             IQ_EMAIL, IQ_PASSWORD = email.strip(), password
-            return True, "Conta conectada na conta PRACTICE"
+            return True, f"Conta conectada na conta {ACCOUNT_TYPE}"
         except Exception as exc:
             return False, f"Exceção: {exc}"
 
 
 def is_connected() -> bool:
     return _api is not None
+
+
+def get_api():
+    """Exposição da instância do cliente (uso interno do trade_manager)."""
+    return _api
+
+
+def set_account_type(tipo: str) -> tuple[bool, str]:
+    """Define a conta das operações: PRACTICE (demo) ou REAL (oficial).
+
+    Se já estiver conectado, troca a conta ativa na IQ Option na hora.
+    """
+    global ACCOUNT_TYPE
+    tipo = (tipo or "PRACTICE").upper()
+    if tipo not in ("PRACTICE", "REAL"):
+        return False, f"Tipo de conta inválido: {tipo} (use PRACTICE ou REAL)"
+    ACCOUNT_TYPE = tipo
+    with _lock:
+        if _api is not None:
+            try:
+                _api.change_balance(tipo)
+                time.sleep(0.3)
+                if _api.get_balance_mode() != tipo:
+                    return False, (
+                        f"Não foi possível trocar a conta ativa para {tipo}. "
+                        "A conta pode não existir no perfil da IQ Option."
+                    )
+            except Exception as e:
+                return False, f"Falha ao trocar a conta ativa: {e}"
+    return True, f"Conta configurada: {tipo}"
+
+
+def get_balance_mode_safe():
+    """Retorna o modo da conta ativa na IQ Option (None se desconectado)."""
+    if _api is None:
+        return None
+    try:
+        return _api.get_balance_mode()
+    except Exception:
+        return None
 
 
 def get_balance():
@@ -83,6 +136,37 @@ def get_balance():
         return _api.get_balance()
     except Exception:
         return None
+
+
+def buy(ativo: str, valor: float, direcao: str, expiracao_min: int) -> tuple[bool, object]:
+    """Executa uma opção binária (turbo/binary) na conta ativa.
+
+    Retorna (True, ordem_id) em caso de sucesso.
+    """
+    if _api is None:
+        return False, "não conectado"
+    try:
+        return _api.buy(round(float(valor), 2), ativo, direcao.lower(), int(expiracao_min))
+    except Exception as e:
+        return False, f"exceção ao comprar: {e}"
+
+
+def get_payout(ativo: str, expiracao_min: int) -> float | None:
+    """Multiplicador de payout esperado (ex.: 0.81 = 81%). Best-effort."""
+    global _payout_cache, _payout_cache_ts
+    if _api is None:
+        return None
+    try:
+        if time.time() - _payout_cache_ts > 300:
+            _payout_cache = _api.get_all_profit()
+            _payout_cache_ts = time.time()
+    except Exception:
+        return None
+    info = _payout_cache.get(ativo)
+    if not info:
+        return None
+    opcao = "turbo" if int(expiracao_min) <= 5 else "binary"
+    return info.get(opcao) or info.get("turbo") or info.get("binary")
 
 
 # Lista padrão de ativos (forex) disponíveis na IQ Option

@@ -65,6 +65,7 @@
     <button class="view-tab" data-view="entrada">🎯 Entradas</button>
     <button class="view-tab" data-view="config">⚙️ Configuração</button>
     <button class="view-tab" data-view="relatorio">📊 Relatório</button>
+    <button class="view-tab" data-view="strategies">📚 Estratégias</button>
     <button class="view-tab" data-view="radar">📡 Radar de Pares</button>
     <button class="view-tab" data-view="news">🗓 Notícias</button>
   </nav>
@@ -348,23 +349,66 @@
             <div class="expiry-head"><span>EXPIRAÇÃO 1 MINUTO</span><span class="signal-lock" id="lock-1min"></span></div>
             <div class="expiry-main"><span class="expiry-signal" id="signal-1min">AGUARDAR</span><span class="expiry-timer" id="timer-1min">--:--</span></div>
             <p id="reason-1min">Aguardando análise.</p>
+            <div class="vote-bar hidden" id="votes-1min"></div>
           </article>
           <article class="expiry-card neutral" data-expiry-card="5min">
             <div class="expiry-head"><span>EXPIRAÇÃO 5 MINUTOS</span><span class="signal-lock" id="lock-5min"></span></div>
             <div class="expiry-main"><span class="expiry-signal" id="signal-5min">AGUARDAR</span><span class="expiry-timer" id="timer-5min">--:--</span></div>
             <p id="reason-5min">Aguardando análise.</p>
+            <div class="vote-bar hidden" id="votes-5min"></div>
           </article>
           <article class="expiry-card neutral" data-expiry-card="15min">
             <div class="expiry-head"><span>EXPIRAÇÃO 15 MINUTOS</span><span class="signal-lock" id="lock-15min"></span></div>
             <div class="expiry-main"><span class="expiry-signal" id="signal-15min">AGUARDAR</span><span class="expiry-timer" id="timer-15min">--:--</span></div>
             <p id="reason-15min">Aguardando análise.</p>
+            <div class="vote-bar hidden" id="votes-15min"></div>
           </article>
         </div>
 
         <div class="analysis-note" id="analysis-note">O sinal só muda quando o prazo correspondente expirar.</div>
         <button id="quick-entry" class="btn-primary entry-quick hidden">🎯 Entrar com este sinal (1m)</button>
+
+        <!-- IA — segunda opinião -->
+        <div class="card ai-block">
+          <div class="table-header">
+            <h3>🤖 IA — segunda opinião</h3>
+            <button id="btn-ai" class="btn-secondary">Consultar IA</button>
+          </div>
+          <input id="ai-instruction" class="ai-instruction" type="text" maxlength="300" placeholder="Instruções extras para a IA (opcional). Ex.: priorize o RSI e o ADX." />
+          <div id="ai-status" class="status hidden"></div>
+          <div id="ai-result" class="hidden ai-result"></div>
+        </div>
       </div>
 
+    </div>
+  </section>
+
+  <!-- ============================================================
+       ABA — ESTRATÉGIAS E INDICADORES
+  ============================================================= -->
+  <section id="view-strategies" class="view hidden">
+    <div class="strategies-header">
+      <div>
+        <span class="eyebrow">CATÁLOGO DO MOTOR</span>
+        <h2>📚 Estratégias e Indicadores</h2>
+        <p class="muted">Estratégias de análise disponíveis e os indicadores que participam dos votos de detalhamento e da consulta à IA. Ative/desative indicadores conforme desejar.</p>
+      </div>
+    </div>
+
+    <div id="strategies-status" class="status hidden"></div>
+
+    <div class="card">
+      <div class="table-header"><h3>Estratégias de análise</h3></div>
+      <div class="strategies-grid" id="strategies-grid"></div>
+    </div>
+
+    <div class="card">
+      <div class="table-header">
+        <h3>Indicadores ativos</h3>
+        <button id="btn-indicators-save" class="btn-secondary">Salvar seleção</button>
+      </div>
+      <p class="muted small">Template para adicionar indicadores novos: consulte <code>INDICADORES_PADRAO</code> em <code>analysis.py</code> — basta criar a função de voto <code>_vote_*</code> e registrar com id, nome, descrição e peso.</p>
+      <div class="indicators-grid" id="indicators-grid"></div>
     </div>
   </section>
 

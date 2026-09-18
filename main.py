@@ -8,6 +8,7 @@ import iq_service
 import analysis
 import news_service
 import trade_manager
+import ai_advisor
 
 
 @asynccontextmanager
@@ -316,3 +317,67 @@ def trade_relatorio(periodo: str = "dia"):
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(500, f"Erro no relatório: {exc}")
+
+
+# ===========================================================================
+# Indicadores (catálogo, ativação e percentual de acerto manual)
+# ===========================================================================
+class IndicadoresRequest(BaseModel):
+    ativos: list[str]
+
+
+@app.get("/api/indicators")
+def indicators_listar():
+    return {"indicadores": analysis.listar_indicadores()}
+
+
+@app.put("/api/indicators")
+def indicators_salvar(request: IndicadoresRequest):
+    ok, msg = analysis.set_indicadores_ativos(request.ativos)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "message": msg, "indicadores": analysis.listar_indicadores()}
+
+
+class AcertoRequest(BaseModel):
+    taxa: float | None = None
+
+
+@app.put("/api/accuracy/{expiry}")
+def accuracy_salvar(expiry: str, request: AcertoRequest):
+    ok, msg = analysis.set_override_acerto(expiry, request.taxa)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "message": msg}
+
+
+@app.delete("/api/accuracy/{expiry}")
+def accuracy_remover(expiry: str):
+    ok, msg = analysis.set_override_acerto(expiry, None)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "message": msg}
+
+
+# ===========================================================================
+# IA — análise de entrada com modelo de linguagem
+# ===========================================================================
+class AiAnaliseRequest(BaseModel):
+    ativo: str
+    strategy: str = "trend_pullback"
+    instrucao_extra: str | None = None
+
+
+@app.post("/api/ai/analise")
+def ai_analise(request: AiAnaliseRequest):
+    """Envia parâmetros + lógica atuais para a IA e devolve a análise."""
+    _ensure_connected()
+    if not ai_advisor.disponivel():
+        raise HTTPException(503, "OPENAI_API_KEY não configurada no .env.")
+    strategy = request.strategy
+    if strategy not in analysis.STRATEGIES:
+        raise HTTPException(400, f"Estratégia desconhecida: {strategy}")
+    ativo = request.ativo.upper().replace("=X", "")
+    if ativo not in iq_service.list_assets():
+        raise HTTPException(404, f"Ativo desconhecido: {ativo}")
+    return ai_advisor.consultar(ativo, strategy, request.instrucao_extra or "")

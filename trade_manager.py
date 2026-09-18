@@ -25,6 +25,7 @@ DB_PATH = Path(__file__).resolve().parent / "market.db"
 _LOCK = threading.RLock()
 _WORKER_THREAD: threading.Thread | None = None
 _APURACAO_EM_ANDAMENTO: set[int] = set()
+_BD_INICIALIZADO = False
 
 DEFAULTS = {
     "conta": "PRACTICE",
@@ -52,6 +53,18 @@ def _db():
         conn.commit()
     finally:
         conn.close()
+
+
+def _garantir_bd() -> None:
+    """Inicializa o banco uma única vez quando necessário (lazy init)."""
+    global _BD_INICIALIZADO
+    if _BD_INICIALIZADO:
+        return
+    with _LOCK:
+        if not _BD_INICIALIZADO:
+            _init_db()
+            # Se outro módulo já criou via iniciar(), apenas sincroniza a flag
+            _BD_INICIALIZADO = True
 
 
 def _init_db() -> None:
@@ -104,6 +117,7 @@ def _init_db() -> None:
 # Configurações
 # ---------------------------------------------------------------------------
 def get_config() -> dict:
+    _garantir_bd()
     with _LOCK, _db() as conn:
         rows = conn.execute("SELECT chave, valor FROM configuracao").fetchall()
     config = {row["chave"]: row["valor"] for row in rows}
@@ -115,6 +129,16 @@ def get_config() -> dict:
 def get_config_valor(chave: str, padrao=None):
     config = get_config()
     return config.get(chave, padrao)
+
+
+def set_config_raw(chave: str, valor) -> None:
+    """Grava uma chave de configuração arbitrária (ex.: indicadores, acerto)."""
+    _garantir_bd()
+    with _LOCK, _db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO configuracao (chave, valor) VALUES (?, ?)",
+            (chave, str(valor)),
+        )
 
 
 def _num(valor, padrao: float) -> float:
@@ -250,6 +274,7 @@ def _recalcular_estado(entradas_fechadas: list[sqlite3.Row]) -> dict:
 
 
 def _entradas_fechadas() -> list[sqlite3.Row]:
+    _garantir_bd()
     with _LOCK, _db() as conn:
         return conn.execute(
             "SELECT * FROM entradas ORDER BY id ASC"
@@ -298,6 +323,7 @@ def listar_entradas(periodo: str = "dia") -> list[dict]:
     if periodo not in PERIODOS:
         raise ValueError(f"Período inválido: {periodo}")
     inicio = _inicio_periodo(periodo).isoformat(sep=" ")
+    _garantir_bd()
     with _LOCK, _db() as conn:
         rows = conn.execute(
             "SELECT * FROM entradas WHERE criado_em >= ? ORDER BY id DESC",
@@ -431,6 +457,7 @@ def criar_entrada(
 
 
 def buscar_entrada(entrada_id: int) -> sqlite3.Row | None:
+    _garantir_bd()
     with _LOCK, _db() as conn:
         return conn.execute(
             "SELECT * FROM entradas WHERE id = ?", (entrada_id,)
@@ -601,9 +628,10 @@ def _worker() -> None:
 
 def iniciar() -> None:
     """Inicializa o banco, aplica a conta configurada e liga o worker."""
-    global _WORKER_THREAD
+    global _WORKER_THREAD, _BD_INICIALIZADO
     with _LOCK:
         _init_db()
+        _BD_INICIALIZADO = True
         conta = get_config_valor("conta", "PRACTICE")
         iq_service.set_account_type(conta)
         if _WORKER_THREAD is None or not _WORKER_THREAD.is_alive():

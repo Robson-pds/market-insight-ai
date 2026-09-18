@@ -824,3 +824,102 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 }
 .report-card.call strong { color: var(--green); }
 .report-card.put strong { color: var(--red); }
+
+/* ============================================================
+   ABA ESTRATÉGIAS — catálogo e indicadores
+============================================================ */
+.strategies-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.strategy-card-mini {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.strategy-card-mini.active { border-color: var(--blue); }
+.strategy-card-mini p { margin: 0; color: var(--muted); font-size: 13px; }
+.strategy-mini-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+}
+.indicators-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.indicator-toggle {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.indicator-toggle.active { border-color: var(--green); }
+.indicator-toggle input { accent-color: var(--green); }
+.ind-toggle-text { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.ind-toggle-text small { color: var(--muted); font-size: 11.5px; }
+.ind-peso {
+  font-size: 11px; color: var(--muted);
+  background: var(--panel-2);
+  border-radius: 6px; padding: 3px 7px;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Votos dos indicadores (aba Análise)
+============================================================ */
+.vote-bar { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.vote-summary {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  font-size: 12px; font-weight: 600; margin-bottom: 6px;
+}
+.vote-bull { color: var(--green); }
+.vote-bear { color: var(--red); }
+.vote-neu { color: var(--muted); }
+.vote-conf { color: var(--blue); margin-left: auto; }
+.vote-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.vote-chip {
+  font-size: 11px; border-radius: 6px; padding: 2px 7px;
+  border: 1px solid var(--border); color: var(--muted);
+  cursor: help;
+}
+.chip-call { color: var(--green); border-color: var(--green-dark); }
+.chip-put { color: var(--red); border-color: var(--red-dark); }
+.acc-edit { cursor: pointer; border-bottom: 1px dotted var(--blue); color: var(--blue); }
+.acc-edit.muted { color: var(--muted); border-color: var(--muted); }
+.acc-manual { color: var(--amber); font-size: 11px; font-weight: 700; }
+
+/* ============================================================
+   IA — segunda opinião
+============================================================ */
+.ai-block { margin-top: 14px; }
+.ai-instruction {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 11px;
+  margin-top: 4px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.ai-instruction:focus { outline: none; border-color: var(--blue); }
+.ai-result { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.ai-direcao {
+  font-size: 18px; font-weight: 800;
+  padding: 10px 14px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--border);
+}
+.ai-direcao.call { color: var(--green); border-color: var(--green-dark); }
+.ai-direcao.put { color: var(--red); border-color: var(--red-dark); }
+.ai-direcao.neutral { color: var(--amber); border-color: var(--amber); }
+.ai-just { margin: 0; color: var(--text); line-height: 1.5; }
+.ai-riscos { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }

@@ -43,6 +43,7 @@ function switchView(view) {
   $("view-entrada").classList.toggle("hidden", view !== "entrada");
   $("view-config").classList.toggle("hidden", view !== "config");
   $("view-relatorio").classList.toggle("hidden", view !== "relatorio");
+  $("view-strategies").classList.toggle("hidden", view !== "strategies");
   if (view === "radar" && !$("radar-output").dataset.loaded) runRadar();
   if (view === "news") loadNews();
   if (view === "entrada") {
@@ -51,6 +52,7 @@ function switchView(view) {
   }
   if (view === "config") loadTradeConfig();
   if (view === "relatorio") loadReport();
+  if (view === "strategies") loadStrategiesView();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 $("gate-strategy-select").addEventListener("change", (event) => {
@@ -480,11 +482,42 @@ function renderSignal(expiry, signal) {
   const statusClass = displayStatus === "ATENÇÃO" ? "attention" : displayStatus === "SINAL MUITO PRÓXIMO" ? "near" : "";
   card.className = `expiry-card ${direction === "CALL" ? "call" : direction === "PUT" ? "put" : "neutral"} ${statusClass}`.trim();
   $( `signal-${expiry}` ).textContent = displayStatus;
+
+  // Percentual de acerto: clicável para ajuste manual em runtime
   const accuracy = signal.historical_accuracy;
-  const accuracyText = accuracy && accuracy.rate !== null
-    ? `Estimativa histórica: ${accuracy.rate.toFixed(1)}% (${accuracy.sample_size} casos)`
-    : "Estimativa histórica: sem amostra suficiente";
-  $( `reason-${expiry}` ).textContent = `${signal.reason || "Sem confirmação suficiente."} ${accuracyText}`;
+  let accuracyHtml;
+  if (accuracy && accuracy.rate !== null) {
+    const manual = accuracy.manual ? '<span class="acc-manual"> (manual)</span>' : "";
+    accuracyHtml = `<span class="acc-edit" data-acc="${expiry}" title="Clique para ajustar o percentual (runtime)">acerto: <b>${Number(accuracy.rate).toFixed(1)}%</b></span>${manual}`;
+  } else {
+    accuracyHtml = `<span class="acc-edit muted" data-acc="${expiry}" title="Clique para definir um percentual (runtime)">acerto: sem amostra</span>`;
+  }
+  $( `reason-${expiry}` ).innerHTML =
+    `${escapeHtml(signal.reason || "Sem confirmação suficiente.")} · ` + accuracyHtml;
+
+  // Votos dos indicadores ativos
+  const votesEl = $(`votes-${expiry}`);
+  const resumo = signal.resumo_votos;
+  const votos = signal.votos || [];
+  if (resumo && votos.length) {
+    votesEl.innerHTML = `
+      <div class="vote-summary">
+        <span class="vote-bull">▲ ${resumo.bulls} CALL</span>
+        <span class="vote-bear">▼ ${resumo.bears} PUT</span>
+        <span class="vote-neu">● ${resumo.neutros} neutros</span>
+        <span class="vote-conf">confiança ${Number(resumo.confianca || 0).toFixed(1)}%</span>
+      </div>
+      <div class="vote-list">
+        ${votos.map((v) =>
+          `<span class="vote-chip ${v.voto > 0 ? "chip-call" : v.voto < 0 ? "chip-put" : "chip-neu"}" title="${escapeHtml(v.motivo)}">${escapeHtml(v.nome)}</span>`
+        ).join("")}
+      </div>`;
+    votesEl.classList.remove("hidden");
+  } else {
+    votesEl.classList.add("hidden");
+    votesEl.innerHTML = "";
+  }
+
   $( `lock-${expiry}` ).textContent = signal.locked ? "SINAL FIXADO" : "NOVO SINAL";
   card.dataset.expiresAt = signal.expires_at || "";
   const expiresAt = Number(signal.expires_at);
@@ -1262,5 +1295,172 @@ function renderReport(d) {
 
 // Atualiza periodicamente o histórico quando a aba Entradas estiver visível
 setInterval(() => { if (!$("view-entrada").classList.contains("hidden")) loadEntries(); }, 15000);
+
+/* ============================================================
+   Votos dos indicadores + percentual de acerto editável
+============================================================ */
+document.addEventListener("click", (event) => {
+  const alvo = event.target.closest("[data-acc]");
+  if (!alvo) return;
+  editarAcerto(alvo.dataset.acc);
+});
+
+async function editarAcerto(expiry) {
+  const atual = window.latestAnalysis?.signals?.[expiry]?.historical_accuracy;
+  const valorAtual = atual && atual.rate !== null ? String(atual.rate) : "";
+  const entrada = window.prompt(
+    `Percentual de acerto manual para ${expiry} (0 a 100).\nDeixe VAZIO para apagar o manual e voltar ao automático:`,
+    valorAtual
+  );
+  if (entrada === null) return;
+  const listaErro = [];
+  if (entrada.trim() === "") {
+    try {
+      const r = await fetch(`/api/accuracy/${expiry}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("Falha ao remover");
+    } catch (e) { listaErro.push(e.message); }
+  } else {
+    const taxa = parseFloat(entrada.replace(",", "."));
+    if (!Number.isFinite(taxa) || taxa < 0 || taxa > 100) {
+      alert("Valor inválido. Use um número entre 0 e 100.");
+      return;
+    }
+    try {
+      const r = await fetch(`/api/accuracy/${expiry}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taxa }),
+      });
+      if (!r.ok) throw new Error("Falha ao salvar");
+    } catch (e) { listaErro.push(e.message); }
+  }
+  if (listaErro.length) {
+    $("analysis-note").textContent = `Erro ao ajustar acerto: ${listaErro.join("; ")}`;
+  } else {
+    $("analysis-note").textContent = `Percentual de acerto de ${expiry} atualizado (runtime).`;
+  }
+  await loadAnalysis();
+}
+
+/* ============================================================
+   IA — segunda opinião
+============================================================ */
+$("btn-ai").addEventListener("click", consultarIA);
+
+async function consultarIA() {
+  const status = $("ai-status");
+  const resultado = $("ai-result");
+  const btn = $("btn-ai");
+  setStatus(status, "loading", "Consultando a IA… (pode levar alguns segundos)");
+  resultado.classList.add("hidden");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/ai/analise", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ativo: currentAsset,
+        strategy: selectedStrategy,
+        instrucao_extra: $("ai-instruction").value,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Falha na consulta");
+    if (d.erro) throw new Error(d.erro);
+    status.classList.add("hidden");
+    const cls = d.direcao === "CALL" ? "call" : d.direcao === "PUT" ? "put" : "neutral";
+    const riscos = (d.riscos || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+    resultado.innerHTML = `
+      <div class="ai-direcao ${cls}">${d.direcao} · confiança ${Number(d.confianca).toFixed(1)}%</div>
+      <p class="ai-just">${escapeHtml(d.justificativa || "Sem justificativa fornecida.")}</p>
+      ${riscos ? `<ul class="ai-riscos">${riscos}</ul>` : ""}
+      <small class="muted">Modelo: ${escapeHtml(d.modelo || "—")} · análise educacional, não é recomendação de investimento.</small>`;
+    resultado.classList.remove("hidden");
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ============================================================
+   Aba Estratégias — catálogo + indicadores ativos
+============================================================ */
+async function loadStrategiesView() {
+  const grid = $("strategies-grid");
+  grid.innerHTML = Object.entries(strategyCatalog || {}).map(([key, item]) => {
+    const ativa = key === selectedStrategy;
+    return `
+      <div class="strategy-card-mini ${ativa ? "active" : ""}" data-strategy="${escapeHtml(key)}">
+        <div class="strategy-mini-head">
+          <strong>${escapeHtml(item.name)}</strong>
+          <button class="btn-mini">${ativa ? "✓ Ativa" : "Usar"}</button>
+        </div>
+        <p>${escapeHtml(item.description)}</p>
+        <small class="muted">Indicadores: ${(item.indicadores || []).map(escapeHtml).join(", ")}</small>
+      </div>`;
+  }).join("");
+  grid.querySelectorAll("[data-strategy]").forEach((card) => {
+    card.querySelector("button").addEventListener("click", () => {
+      selectedStrategy = card.dataset.strategy;
+      confirmStrategy(); // re-confirma e parte para o rastreamento com a nova estratégia
+    });
+  });
+  await loadIndicators();
+}
+
+async function loadIndicators() {
+  try {
+    const r = await fetch("/api/indicators");
+    const d = await r.json();
+    window.indicatorsCatalog = d.indicadores || [];
+    renderIndicators();
+  } catch {}
+}
+
+function renderIndicators() {
+  const grid = $("indicators-grid");
+  grid.innerHTML = "";
+  (window.indicatorsCatalog || []).forEach((ind) => {
+    const label = document.createElement("label");
+    label.className = `indicator-toggle${ind.ativo ? " active" : ""}`;
+    label.innerHTML = `
+      <input type="checkbox" data-ind="${escapeHtml(ind.id)}" ${ind.ativo ? "checked" : ""} />
+      <div class="ind-toggle-text">
+        <strong>${escapeHtml(ind.nome)}</strong>
+        <small>${escapeHtml(ind.descricao)}</small>
+      </div>
+      <span class="ind-peso">peso ${ind.peso}</span>`;
+    label.querySelector("input").addEventListener("change", () => {
+      label.classList.toggle("active", label.querySelector("input").checked);
+    });
+    grid.appendChild(label);
+  });
+}
+
+async function saveIndicators() {
+  const ativos = Array.from(document.querySelectorAll("#indicators-grid input[type=checkbox]:checked"))
+    .map((input) => input.dataset.ind);
+  const status = $("strategies-status");
+  setStatus(status, "loading", "Salvando indicadores…");
+  try {
+    const r = await fetch("/api/indicators", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ativos }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || d.detail || "Falha ao salvar");
+    window.indicatorsCatalog = d.indicadores;
+    renderIndicators();
+    setStatus(status, "", d.message + " A análise será recalculada.");
+    setTimeout(() => status.classList.add("hidden"), 3000);
+    loadAnalysis(true); // força recálculo com os novos indicadores
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  }
+}
+
+$("btn-indicators-save").addEventListener("click", saveIndicators);
 
 boot();

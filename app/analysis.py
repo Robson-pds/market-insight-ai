@@ -482,6 +482,142 @@ def _vote_williams(df, i):
     return 0, f"Williams %R {williams:.1f} neutro"
 
 
+def _preparar_mfi(df):
+    """Money Flow Index (14): fluxo monetário com volume e preço típico."""
+    if "MFI" not in df.columns:
+        típico = (df["High"] + df["Low"] + df["Close"]) / 3
+        raw = típico * df["Volume"]
+        diff = típico.diff()
+        positivo = raw.where(diff > 0, 0.0).rolling(14).sum()
+        negativo = raw.where(diff < 0, 0.0).rolling(14).sum()
+        mfi = 100 - (100 / (1 + positivo / negativo.replace(0, np.nan)))
+        df = df.assign(MFI=mfi)
+    return df
+
+
+def _vote_mfi(df, i):
+    mfi = df["MFI"].iloc[i]
+    prev = df["MFI"].iloc[i - 1] if i >= 1 else mfi
+    if pd.isna(mfi) or pd.isna(prev):
+        return 0, "MFI sem dados"
+    if mfi < 20 and mfi > prev:
+        return 1, f"MFI {mfi:.1f} saindo de sobrevenda — CALL"
+    if mfi > 80 and mfi < prev:
+        return -1, f"MFI {mfi:.1f} saindo de sobrecompra — PUT"
+    if mfi < 20:
+        return 1, f"MFI {mfi:.1f} sobrevenda — CALL"
+    if mfi > 80:
+        return -1, f"MFI {mfi:.1f} sobrecompra — PUT"
+    return 0, f"MFI {mfi:.1f} neutro"
+
+
+def _preparar_roc(df):
+    """Rate of Change (10): variação percentual do preço de fechamento."""
+    if "ROC" not in df.columns:
+        df = df.assign(ROC=df["Close"].pct_change(periods=10) * 100)
+    return df
+
+
+def _vote_roc(df, i):
+    roc = df["ROC"].iloc[i]
+    if pd.isna(roc):
+        return 0, "ROC sem dados"
+    if roc > 0.5:
+        return 1, f"ROC {roc:.2f}% momentum de alta — CALL"
+    if roc < -0.5:
+        return -1, f"ROC {roc:.2f}% momentum de baixa — PUT"
+    return 0, f"ROC {roc:.2f}% neutro"
+
+
+def _preparar_sar(df):
+    """Parabolic SAR (0.02 / 0.2): ponto de reversão que segue o preço."""
+    if "SAR" not in df.columns:
+        closes = df["Close"].to_numpy()
+        highs = df["High"].to_numpy()
+        lows = df["Low"].to_numpy()
+        n = len(df)
+        sar = np.full(n, np.nan)
+        af = 0.02
+        af_max = 0.2
+        is_long = True
+        ext = lows[0]
+        valor = closes[0]
+        for k in range(1, n):
+            valor = valor + af * (ext - valor)
+            if is_long:
+                valor = min(valor, lows[k - 1], lows[k])
+                if closes[k] < valor:
+                    is_long = False
+                    valor = ext
+                    ext = highs[k]
+                    af = 0.02
+                elif highs[k] > ext:
+                    ext = highs[k]
+                    af = min(af + 0.02, af_max)
+            else:
+                valor = max(valor, highs[k - 1], highs[k])
+                if closes[k] > valor:
+                    is_long = True
+                    valor = ext
+                    ext = lows[k]
+                    af = 0.02
+                elif lows[k] < ext:
+                    ext = lows[k]
+                    af = min(af + 0.02, af_max)
+            sar[k] = valor
+        df = df.assign(SAR=sar)
+    return df
+
+
+def _vote_sar(df, i):
+    close = df["Close"].iloc[i]
+    sar = df["SAR"].iloc[i]
+    if pd.isna(sar):
+        return 0, "SAR sem dados"
+    if close > sar:
+        return 1, f"Preço acima do SAR ({sar:.5f}) — CALL"
+    if close < sar:
+        return -1, f"Preço abaixo do SAR ({sar:.5f}) — PUT"
+    return 0, "SAR na direção indefinida"
+
+
+def _preparar_obv(df):
+    """On-Balance Volume: volume acumulado conforme a direção do close."""
+    if "OBV" not in df.columns:
+        direcao = np.sign(df["Close"].diff().fillna(0))
+        df = df.assign(OBV=(direcao * df["Volume"]).cumsum())
+    return df
+
+
+def _vote_obv(df, i):
+    obv = df["OBV"].iloc[i]
+    if pd.isna(obv) or i < 10:
+        return 0, "OBV sem histórico"
+    media = df["OBV"].iloc[max(0, i - 10):i + 1].mean()
+    if obv > media:
+        return 1, "OBV acima da média — pressão compradora — CALL"
+    if obv < media:
+        return -1, "OBV abaixo da média — pressão vendedora — PUT"
+    return 0, "OBV neutro"
+
+
+def _vote_engolfo(df, i):
+    """Padrão de vela: corpo atual engole o corpo anterior (rejeição)."""
+    if i < 1:
+        return 0, "Engolfo sem vela anterior"
+    o, c = df["Open"].iloc[i], df["Close"].iloc[i]
+    po, pc = df["Open"].iloc[i - 1], df["Close"].iloc[i - 1]
+    corpo = abs(c - o)
+    corpo_prev = abs(pc - po)
+    if pd.isna(o) or pd.isna(c) or corpo < 1e-12 or corpo_prev < 1e-12:
+        return 0, "Engolfo sem corpo"
+    if c > o and c >= po and o <= pc and corpo > corpo_prev * 1.2:
+        return 1, "Candle de alta engolfa o anterior — CALL"
+    if c < o and c <= po and o >= pc and corpo > corpo_prev * 1.2:
+        return -1, "Candle de baixa engolfa o anterior — PUT"
+    return 0, "Sem engolfo"
+
+
 # ===========================================================================
 # Registro declarativo de indicadores
 # ===========================================================================
@@ -564,6 +700,51 @@ INDICADORES_PADRAO = [
         "peso": 0.8,
         "votar": _vote_williams,
     },
+    # ---- Novos indicadores (padrão DESMARCADO; ative na aba Estratégias) ----
+    {
+        "id": "mfi",
+        "nome": "MFI (14)",
+        "descricao": "Money Flow Index: fluxo monetário com volume; extremos de sobrevenda/sobrecompra.",
+        "peso": 1.0,
+        "padrao": False,
+        "preparar": _preparar_mfi,
+        "votar": _vote_mfi,
+    },
+    {
+        "id": "roc",
+        "nome": "ROC (10)",
+        "descricao": "Rate of Change: momentum percentual do preço.",
+        "peso": 0.8,
+        "padrao": False,
+        "preparar": _preparar_roc,
+        "votar": _vote_roc,
+    },
+    {
+        "id": "sar",
+        "nome": "Parabolic SAR",
+        "descricao": "Ponto de reversão que segue o preço; direção do SAR.",
+        "peso": 1.0,
+        "padrao": False,
+        "preparar": _preparar_sar,
+        "votar": _vote_sar,
+    },
+    {
+        "id": "obv",
+        "nome": "OBV",
+        "descricao": "On-Balance Volume: pressão compradora/vendedora acumulada.",
+        "peso": 0.8,
+        "padrao": False,
+        "preparar": _preparar_obv,
+        "votar": _vote_obv,
+    },
+    {
+        "id": "engolfo",
+        "nome": "Candle de engolfo",
+        "descricao": "Padrão de vela: o corpo atual engole o anterior (rejeição).",
+        "peso": 0.9,
+        "padrao": False,
+        "votar": _vote_engolfo,
+    },
 ]
 
 _INDICADORES_POR_ID = {reg["id"]: reg for reg in INDICADORES_PADRAO}
@@ -588,8 +769,9 @@ def _ids_indicadores_ativos() -> list[str]:
     bruto = trade_manager.get_config_valor("indicadores_ativos", "")
     ids = [parte.strip() for parte in str(bruto or "").split(",") if parte.strip()]
     validos = [i for i in ids if i in _INDICADORES_POR_ID]
-    # Se nada foi configurado ainda, todos os indicadores participam
-    return validos or [reg["id"] for reg in INDICADORES_PADRAO]
+    # Se nada foi configurado ainda, apenas os indicadores de PADRÃO participam;
+    # os indicadores novos (padrao=False) entram somente quando marcados na aba Estratégias.
+    return validos or [reg["id"] for reg in INDICADORES_PADRAO if reg.get("padrao", True)]
 
 
 def set_indicadores_ativos(ids: list[str]) -> tuple[bool, str]:

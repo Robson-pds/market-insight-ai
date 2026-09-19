@@ -462,9 +462,20 @@ function renderAnalysis(d, highlight = false) {
   updateTimers(d);
   scheduleSignalRefresh(d);
 
-  // Botão de entrada rápida: aparece quando há sinal CALL/PUT de 1 minuto
-  const sinal1min = d.signals?.["1min"]?.signal;
-  $("quick-entry").classList.toggle("hidden", !sinal1min || !["CALL", "PUT"].includes(sinal1min));
+  // Payout por expiração (multiplicador 0-1 → %)
+  ["1min", "5min", "15min"].forEach((expiry) => {
+    const payout = d.payouts?.[expiry];
+    const el = $(`payout-${expiry}`);
+    if (el) el.textContent = payout === null || payout === undefined ? "" : `Payout ${(Number(payout) * 100).toFixed(1)}%`;
+  });
+
+  // Bloco de entrada rápida: aparece quando há sinal CALL/PUT em alguma expiração
+  const comSinal = Object.entries(d.signals || {}).some(([, s]) => ["CALL", "PUT"].includes(s && s.signal));
+  $("quick-entry-block").classList.toggle("hidden", !comSinal);
+  if (comSinal) {
+    const preSelecionado = ["1min", "5min", "15min"].find((exp) => ["CALL", "PUT"].includes(d.signals?.[exp]?.signal));
+    if (preSelecionado) $("quick-expiry").value = preSelecionado.replace("min", "");
+  }
 }
 
 /**
@@ -991,6 +1002,31 @@ function renderTradeConfig(d) {
   $("config-soros-level").value = config.soros_nivel;
   $("config-soros-field").classList.toggle("hidden", config.estrategia !== "soros");
 
+  // Entrada automática
+  $("auto-enabled").value = config.auto_ativado === "1" ? "1" : "0";
+  $("auto-payout-min").value = Number(config.auto_payout_min || 0.8).toFixed(2);
+  $("auto-confianca-min").value = Number(config.auto_confianca_min || 60).toFixed(0);
+  $("auto-direcao").value = config.auto_direcao || "ambos";
+  $("auto-entrada").value = config.auto_entrada || "atual";
+  let autoPares = [];
+  try { autoPares = JSON.parse(config.auto_pares || "[]"); } catch {}
+  $("auto-pares").value = autoPares.join(", ");
+  let autoHorarios = {};
+  try { autoHorarios = JSON.parse(config.auto_horarios || "{}"); } catch {}
+  $("auto-horarios").value = Object.entries(autoHorarios)
+    .map(([par, lista]) => `${par} ${(Array.isArray(lista) ? lista : [lista]).join(", ")}`)
+    .join("\n");
+  $("auto-max-simultaneas").value = config.auto_max_simultaneas;
+  $("auto-expiry").value = config.auto_expiracao || 1;
+  const autoStrategySelect = $("auto-strategy");
+  autoStrategySelect.innerHTML = Object.entries(strategyCatalog || {})
+    .map(([key, item]) => `<option value="${key}">${escapeHtml(item.name)}</option>`)
+    .join("");
+  autoStrategySelect.value = config.auto_strategy || "trend_pullback";
+  if (strategyCatalog && strategyCatalog[autoStrategySelect.value]) {
+    $("auto-strategy-desc").textContent = strategyCatalog[autoStrategySelect.value].description;
+  }
+
   const labelConta = config.conta === "REAL" ? "REAL" : "PRACTICE";
   $("balance-label").textContent = labelConta;
 
@@ -1041,6 +1077,17 @@ async function saveTradeConfig() {
       valor_max_perda: parseFloat($("config-max-loss").value),
       estrategia: $("config-strategy").value,
       soros_nivel: parseInt($("config-soros-level").value, 10) || 3,
+      // Entrada automática
+      auto_ativado: $("auto-enabled").value,
+      auto_payout_min: parseFloat($("auto-payout-min").value),
+      auto_confianca_min: parseFloat($("auto-confianca-min").value),
+      auto_direcao: $("auto-direcao").value,
+      auto_entrada: $("auto-entrada").value,
+      auto_pares: $("auto-pares").value,
+      auto_horarios: $("auto-horarios").value,
+      auto_max_simultaneas: parseInt($("auto-max-simultaneas").value, 10) || 1,
+      auto_expiracao: parseInt($("auto-expiry").value, 10) || 1,
+      auto_strategy: $("auto-strategy").value,
     };
     const r = await fetch("/api/trade/config", {
       method: "PUT",
@@ -1069,10 +1116,8 @@ async function createEntry(executar) {
   if (!ativo) { alert("Informe o ativo (ex.: EURUSD)."); return; }
   if (valor !== null && (!Number.isFinite(valor) || valor <= 0)) { alert("Valor inválido."); return; }
 
-  const msg = executar
-    ? "Confirmar execução de entrada na IQ Option?" + (tradeEstado.config?.conta === "REAL" ? "\n⚠ CONTA OFICIAL (REAL)." : "")
-    : "Confirmar registro manual da entrada?";
-  if (!window.confirm(msg)) return;
+  // Execução na IQ Option não pede confirmação — segundos importam.
+  if (!executar && !window.confirm("Confirmar registro manual da entrada?")) return;
 
   const status = $("entries-status");
   setStatus(status, executar ? "loading" : "loading", executar ? "Executando ordem na IQ Option…" : "Registrando entrada…");
@@ -1239,16 +1284,58 @@ async function excluirEntrada(id) {
   }
 }
 
+$("quick-execute").addEventListener("click", quickExecuteNow);
+
+function quickExpiryKey() {
+  const minutos = parseInt($("quick-expiry").value, 10) || 1;
+  return { key: `${minutos}min`, minutos };
+}
+
 function quickEntry() {
   const analysis = window.latestAnalysis;
-  const sinal = analysis?.signals?.["1min"]?.signal;
+  const { key, minutos } = quickExpiryKey();
+  const sinal = analysis?.signals?.[key]?.signal;
   if (!sinal || !["CALL", "PUT"].includes(sinal)) return;
   $("entry-asset").value = analysis.asset || currentAsset;
   setEntryDirection(sinal);
-  const expiries = { "1min": 1, "5min": 5, "15min": 15 };
-  $("entry-expiry").value = expiries[currentExpiry] || 1;
+  $("entry-expiry").value = minutos;
+  const valorBruto = $("quick-value").value.trim();
+  if (valorBruto) $("entry-value").value = valorBruto;
   switchView("entrada");
   $("entry-value").focus();
+}
+
+async function quickExecuteNow() {
+  const analysis = window.latestAnalysis;
+  const { key, minutos } = quickExpiryKey();
+  const sinal = analysis?.signals?.[key]?.signal;
+  if (!analysis || !["CALL", "PUT"].includes(sinal)) {
+    $("analysis-note").textContent = "Sem sinal CALL/PUT na expiração escolhida.";
+    return;
+  }
+  const valorRaw = $("quick-value").value.trim();
+  const valor = valorRaw === "" ? null : parseFloat(valorRaw);
+  try {
+    const r = await fetch("/api/trade/entradas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ativo: analysis.asset || currentAsset,
+        direcao: sinal,
+        expiracao: minutos,
+        valor,
+        executar: true,
+        origem: "analise",
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || d.detail || "Falha ao executar");
+    $("analysis-note").textContent =
+      `✅ Ordem ${sinal} ${minutos}min executada${d.entrada.ordem_id ? ` (ID ${d.entrada.ordem_id})` : ""}.`;
+    setTimeout(() => loadAnalysis(true), 2500);
+  } catch (e) {
+    $("analysis-note").textContent = `❌ ${e.message}`;
+  }
 }
 
 /* ============================================================

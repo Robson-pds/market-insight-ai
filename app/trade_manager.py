@@ -11,6 +11,7 @@ Persistência local em SQLite (market.db). Sempre em pt-BR.
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -75,6 +76,17 @@ DEFAULTS = {
     "valor_max_perda": "9.00",
     "estrategia": "soros",
     "soros_nivel": "3",
+    # Entrada automática
+    "auto_ativado": "0",
+    "auto_payout_min": "0.80",
+    "auto_confianca_min": "60",
+    "auto_direcao": "ambos",
+    "auto_entrada": "atual",
+    "auto_pares": "[]",
+    "auto_horarios": "{}",
+    "auto_max_simultaneas": "1",
+    "auto_expiracao": "1",
+    "auto_strategy": "trend_pullback",
 }
 
 DIRECOES = ("CALL", "PUT")
@@ -248,6 +260,55 @@ def set_config(dados: dict) -> tuple[bool, str]:
             nivel = max(1, nivel)
         atualizado["soros_nivel"] = str(nivel)
 
+        # ============ Entrada automática ============
+        auto_ativado = str(dados.get("auto_ativado", atuais.get("auto_ativado", "0"))).lower()
+        if auto_ativado not in ("0", "1", "true", "false"):
+            return False, "auto_ativado inválido (use 0 ou 1)."
+        atualizado["auto_ativado"] = "1" if auto_ativado in ("1", "true") else "0"
+
+        payout_min = _num(dados.get("auto_payout_min", atuais.get("auto_payout_min", "0.80")), 0.80)
+        if not 0 <= payout_min <= 1:
+            return False, "O payout mínimo deve estar entre 0 e 1 (ex.: 0.80 = 80%)."
+        atualizado["auto_payout_min"] = f"{payout_min:.4f}"
+
+        confianca_min = _num(dados.get("auto_confianca_min", atuais.get("auto_confianca_min", "60")), 60.0)
+        if not 0 <= confianca_min <= 100:
+            return False, "A confiança mínima deve estar entre 0 e 100."
+        atualizado["auto_confianca_min"] = f"{confianca_min:.1f}"
+
+        direcao = str(dados.get("auto_direcao", atuais.get("auto_direcao", "ambos"))).lower()
+        if direcao not in ("ambos", "call", "put"):
+            return False, "auto_direcao inválido (use ambos, call ou put)."
+        atualizado["auto_direcao"] = direcao
+
+        entrada = str(dados.get("auto_entrada", atuais.get("auto_entrada", "atual"))).lower()
+        if entrada not in ("atual", "proxima"):
+            return False, "auto_entrada inválido (use atual ou proxima)."
+        atualizado["auto_entrada"] = entrada
+
+        # Pares: aceita lista, JSON ou texto separado por vírgula
+        pares = _parse_auto_pares(dados.get("auto_pares", atuais.get("auto_pares", "[]")))
+        atualizado["auto_pares"] = json.dumps(pares, ensure_ascii=False)
+
+        # Horários por par: aceita dict, JSON ou texto "PAR HH:MM-HH:MM" por linha
+        horarios = _parse_auto_horarios(dados.get("auto_horarios", atuais.get("auto_horarios", "{}")))
+        atualizado["auto_horarios"] = json.dumps(horarios, ensure_ascii=False)
+
+        max_sim = int(_num(dados.get("auto_max_simultaneas", atuais.get("auto_max_simultaneas", "1")), 1))
+        if max_sim < 1 or max_sim > 20:
+            return False, "Entradas simultâneas deve estar entre 1 e 20."
+        atualizado["auto_max_simultaneas"] = str(max_sim)
+
+        auto_exp = int(_num(dados.get("auto_expiracao", atuais.get("auto_expiracao", "1")), 1))
+        if auto_exp not in (1, 5, 15):
+            return False, "Expiração do automático deve ser 1, 5 ou 15 minutos."
+        atualizado["auto_expiracao"] = str(auto_exp)
+
+        auto_strategy = str(dados.get("auto_strategy", atuais.get("auto_strategy", "trend_pullback"))).strip()
+        if auto_strategy not in _ESTRATEGIAS_ANALISE:
+            return False, f"Estratégia de análise inválida para o automático: {auto_strategy}"
+        atualizado["auto_strategy"] = auto_strategy
+
         with _db() as conn:
             for chave, valor_str in atualizado.items():
                 conn.execute(
@@ -259,6 +320,251 @@ def set_config(dados: dict) -> tuple[bool, str]:
     if atualizado.get("conta"):
         iq_service.set_account_type(atualizado["conta"])
     return True, "Configurações salvas."
+
+
+# ---------------------------------------------------------------------------
+# Entrada automática (robô)
+# ---------------------------------------------------------------------------
+_ESTRATEGIAS_ANALISE = ("trend_pullback", "breakout", "mean_reversion", "support_resistance", "momentum")
+
+_AUTO_ULTIMA_VARREDURA = 0.0
+_AUTO_INTERVALO = 15  # segundos entre varreduras
+
+
+def _parse_auto_pares(valor) -> list[str]:
+    """Normaliza a lista de pares do automático (lista, JSON ou texto com vírgulas)."""
+    if isinstance(valor, list):
+        itens = valor
+    else:
+        texto = str(valor or "").strip()
+        if not texto:
+            return []
+        try:
+            itens = json.loads(texto)
+        except ValueError:
+            itens = [p for p in texto.replace(";", ",").split(",") if p.strip()]
+    return [
+        str(p).strip().upper().replace("=X", "")
+        for p in itens if str(p).strip()
+    ]
+
+
+def _intervalo_valido(intervalo: str) -> bool:
+    """Valida 'HH:MM-HH:MM' com horas 00-23 e minutos 00-59."""
+    if "-" not in intervalo:
+        return False
+    inicio, fim = intervalo.split("-", 1)
+    try:
+        hi, mi = (int(p) for p in inicio.split(":"))
+        hf, mf = (int(p) for p in fim.split(":"))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= hi <= 23 and 0 <= mi <= 59 and 0 <= hf <= 23 and 0 <= mf <= 59
+
+
+def _parse_auto_horarios(valor) -> dict:
+    """Normaliza os horários por par: {PAR: ["HH:MM-HH:MM", ...]}.
+
+    Aceita dict, JSON ou texto com uma linha por par:
+    "EURUSD 08:00-12:00, 18:00-20:00"
+    """
+    dados: dict = {}
+    if isinstance(valor, dict):
+        dados = valor
+    else:
+        texto = str(valor or "").strip()
+        if not texto:
+            return {}
+        if texto.lstrip().startswith("{"):
+            try:
+                dados = json.loads(texto)
+            except ValueError:
+                return {}
+        else:
+            for linha in texto.splitlines():
+                linha = linha.strip()
+                if not linha or " " not in linha:
+                    continue
+                par, resto = linha.split(" ", 1)
+                par = par.strip().upper().replace("=X", "")
+                intervalos = [i.strip() for i in resto.replace(",", " ").split() if i.strip()]
+                if par and intervalos:
+                    dados[par] = intervalos
+    if not isinstance(dados, dict):
+        return {}
+    saida: dict[str, list[str]] = {}
+    for par, intervalos in dados.items():
+        if isinstance(intervalos, str):
+            intervalos = [intervalos]
+        lista = []
+        for intervalo in intervalos:
+            for parte in str(intervalo).strip().split():
+                if _intervalo_valido(parte):
+                    lista.append(parte)
+        if lista:
+            saida[str(par).strip().upper().replace("=X", "")] = lista
+    return saida
+
+
+def _auto_janela_ativa(par: str, horarios: dict) -> bool:
+    """True se o par puder operar agora (sem horário definido = o dia todo)."""
+    intervalos = horarios.get(par) or horarios.get(par.upper()) or []
+    if not intervalos:
+        return True
+    agora = datetime.now().strftime("%H:%M")
+    for intervalo in intervalos:
+        inicio, fim = intervalo.split("-", 1)
+        if inicio <= fim:
+            if inicio <= agora <= fim:
+                return True
+        else:  # intervalo vira a meia-noite (ex.: 22:00-02:00)
+            if agora >= inicio or agora <= fim:
+                return True
+    return False
+
+
+def _auto_step() -> None:
+    """Uma varredura do robô: sinal + horário + payout + limite de simultâneas."""
+    global _AUTO_ULTIMA_VARREDURA
+    agora_ts = time.time()
+    if agora_ts - _AUTO_ULTIMA_VARREDURA < _AUTO_INTERVALO:
+        return
+    _AUTO_ULTIMA_VARREDURA = agora_ts
+    try:
+        config = get_config()
+        if config.get("auto_ativado") != "1":
+            return
+        if not iq_service.is_connected():
+            return
+
+        pares = _parse_auto_pares(config.get("auto_pares", "[]"))
+        if not pares:
+            return
+        horarios = _parse_auto_horarios(config.get("auto_horarios", "{}"))
+        payout_min = _num(config.get("auto_payout_min"), 0.80)
+        confianca_min = _num(config.get("auto_confianca_min"), 60.0)
+        direcao_permitida = str(config.get("auto_direcao") or "ambos").lower()
+        metodo = str(config.get("auto_entrada") or "atual").lower()
+        max_sim = max(1, int(_num(config.get("auto_max_simultaneas"), 1)))
+        expiracao = int(_num(config.get("auto_expiracao"), 1))
+        strategy = str(config.get("auto_strategy") or "trend_pullback")
+        chave_exp = f"{expiracao}min"
+        valor_base = _num(config.get("valor_entrada"), 2.0)
+
+        with _db() as conn:
+            rows = conn.execute(
+                "SELECT ativo FROM entradas WHERE status = ?",
+                (STATUS_ABERTO,),
+            ).fetchall()
+        abertos = {str(r["ativo"]) for r in rows}
+        if len(abertos) >= max_sim:
+            return
+
+        import analysis  # import local evita ciclo de módulos (analysis → trade_manager)
+
+        for par in pares:
+            if par in abertos or par in _AUTO_AGENDADOS:
+                continue
+            if not _auto_janela_ativa(par, horarios):
+                continue
+            payout = iq_service.get_payout(par, expiracao)
+            if payout is None or payout < payout_min:
+                continue
+            try:
+                resultado = analysis.analyze_asset(par, strategy)
+            except Exception:
+                continue
+            sinais = (resultado.get("signals") or {})
+            # Segue a expiração configurada: usa apenas o sinal da vela escolhida
+            # (1, 5 ou 15 minutos) — sem exigir consenso entre os timeframes.
+            sinal = ((sinais.get(chave_exp) or {}).get("signal") or "").upper()
+            if sinal not in DIRECOES:
+                continue
+            if direcao_permitida == "call" and sinal != "CALL":
+                continue
+            if direcao_permitida == "put" and sinal != "PUT":
+                continue
+            # Confiança mínima: usa os votos dos indicadores na expiração escolhida
+            confianca = _num(((sinais.get(chave_exp) or {}).get("resumo_votos") or {}).get("confianca"), 0.0)
+            if confianca < confianca_min:
+                print(f"[auto] {par} {sinal}: confiança {confianca:.0f}% < {confianca_min:.0f}% — pulou")
+                continue
+            if (resultado.get("news") or {}).get("blocked"):
+                continue
+
+            if metodo == "proxima":
+                # Agenda para o início da próxima vela (revalida o sinal antes)
+                with _LOCK:
+                    _AUTO_AGENDADOS.add(par)
+                threading.Thread(
+                    target=_auto_executar_proxima_vela,
+                    args=(par, sinal, expiracao, valor_base, strategy),
+                    daemon=True,
+                ).start()
+                abertos.add(par)
+                if len(abertos) >= max_sim:
+                    return
+                continue
+
+            ok, msg = criar_entrada(
+                ativo=par,
+                direcao=sinal,
+                expiracao=expiracao,
+                valor=valor_base,
+                executar=True,
+                origem="auto",
+                observacao=f"automático ({strategy})",
+            )
+            if not ok:
+                print(f"[auto] {par} {sinal} {chave_exp}: não executou: {msg}")
+                continue
+            print(f"[auto] entrada executada: {par} {sinal} {chave_exp} (payout {payout:.4f})")
+            abertos.add(par)
+            if len(abertos) >= max_sim:
+                return
+    except Exception as exc:
+        print(f"[auto] erro na varredura: {exc}")
+
+
+# Pares com execução agendada para a próxima vela (evita duplicar agendamentos)
+_AUTO_AGENDADOS: set[str] = set()
+
+
+def _auto_executar_proxima_vela(par: str, sinal: str, expiracao: int, valor: float, strategy: str) -> None:
+    """Aguarda o fechamento da vela atual e executa no início da próxima.
+
+    Revalida o sinal na hora da execução (best-effort): se mudar de direção,
+    a ordem não é enviada.
+    """
+    try:
+        intervalo_s = max(60, int(expiracao) * 60)
+        espera = intervalo_s - (time.time() % intervalo_s)
+        time.sleep(espera + 0.5)
+        if not iq_service.is_connected():
+            return
+        try:
+            import analysis
+            novo = (((analysis.analyze_asset(par, strategy)).get("signals") or {}).get(f"{expiracao}min") or {}).get("signal")
+            if novo not in DIRECOES or novo != sinal:
+                print(f"[auto] {par}: sinal mudou na próxima vela ({sinal}→{novo}) — não executou")
+                return
+        except Exception:
+            pass  # não conseguiu revalidar: segue com o sinal original
+        ok, msg = criar_entrada(
+            ativo=par,
+            direcao=sinal,
+            expiracao=expiracao,
+            valor=valor,
+            executar=True,
+            origem="auto",
+            observacao=f"automático {strategy} (próx. vela)",
+        )
+        print(f"[auto] (próx. vela) {par} {sinal}: " + ("OK" if ok else f"não executou: {msg}"))
+    except Exception as exc:
+        print(f"[auto] erro ao agendar próxima vela {par}: {exc}")
+    finally:
+        with _LOCK:
+            _AUTO_AGENDADOS.discard(par)
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +664,11 @@ def get_estado_completo() -> dict:
     config = get_config()
     estado = _recalcular_estado(_entradas_fechadas())
     sugerido = calcular_valor_sugerido()
+    with _db() as conn:
+        abertas = conn.execute(
+            "SELECT COUNT(*) AS n FROM entradas WHERE status = ?",
+            (STATUS_ABERTO,),
+        ).fetchone()["n"]
     return {
         "config": config,
         "estado": {
@@ -365,6 +676,7 @@ def get_estado_completo() -> dict:
             "valor_sugerido": sugerido["valor"],
             "contador_proxima": sugerido["contador"],
         },
+        "auto_abertas": int(abertas or 0),
         "conectado": iq_service.is_connected(),
         "conta_ativa_api": iq_service.get_balance_mode_safe(),
     }
@@ -679,6 +991,7 @@ def _worker() -> None:
                                 args=(row["id"],),
                                 daemon=True,
                             ).start()
+            _auto_step()  # entrada automática (robô); interno respeita o intervalo
         except Exception:
             pass
         time.sleep(5)

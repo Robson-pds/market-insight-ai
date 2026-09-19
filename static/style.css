@@ -525,6 +525,15 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 .radar-table .pair { font-weight: 700; letter-spacing: 0.3px; }
 .radar-table .pair small { display: block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--red); font-size: 9px; font-weight: 500; }
 .radar-row.loading { opacity: 0.72; }
+.radar-row.closed { opacity: 0.55; }
+
+.mt-badge {
+  display: inline-block; margin-left: 8px; padding: 2px 7px;
+  border-radius: 5px; font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+  vertical-align: middle; border: 1px solid transparent;
+}
+.mt-badge.open   { color: var(--green); background: rgba(38,222,129,0.1);  border-color: rgba(38,222,129,0.4); }
+.mt-badge.closed { color: var(--muted); background: rgba(132,151,176,0.08); border-color: rgba(132,151,176,0.25); }
 
 .tf-badge {
   display: inline-flex; align-items: center; gap: 5px;

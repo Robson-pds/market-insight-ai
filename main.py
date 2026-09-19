@@ -105,6 +105,7 @@ def _analyze_opportunity(asset: str, strategy: str) -> dict:
     conflict_count = len(directional) - consensus_count
     return {
         "asset": asset,
+        "market": iq_service.get_market_status(asset),
         "score": score,
         "max_score": analysis.STRATEGIES[strategy]["max_score"] * 3,
         "consensus_count": consensus_count,
@@ -201,6 +202,7 @@ def radar(strategy: str = "trend_pullback"):
             strat = r["signals"]["1min"]
             results.append({
                 "asset": a,
+                "market": iq_service.get_market_status(a),
                 "recommendation": strat.get("signal", "AGUARDAR"),
                 "score": strat.get("score", 0),
                 "reason": strat.get("reason", ""),

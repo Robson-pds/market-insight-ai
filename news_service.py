@@ -8,7 +8,7 @@ import time
 
 import requests
 
-CALENDAR_URL = os.getenv("BIQUOTE_CALENDAR_URL", "https://biquote.io/api/calendar/upcoming")
+CALENDAR_URL = (os.getenv("BIQUOTE_CALENDAR_URL") or "").strip() or "https://biquote.io/api/calendar/upcoming"
 CALENDAR_CACHE_SECONDS = 60
 _calendar_cache: dict = {"expires_at": 0.0, "payload": None}
 _calendar_lock = threading.Lock()
@@ -35,6 +35,12 @@ NEWS_DESCRIPTIONS = {
 }
 
 
+def _detalhe_erro(exc: Exception) -> str:
+    """Texto curto do erro — melhor que mostrar só o nome da exceção."""
+    texto = str(exc).strip()
+    return texto or type(exc).__name__
+
+
 def _get_calendar_payload() -> list[dict]:
     now = time.monotonic()
     with _calendar_lock:
@@ -42,6 +48,10 @@ def _get_calendar_payload() -> list[dict]:
         if cached is not None and _calendar_cache["expires_at"] > now:
             return cached
 
+        if not CALENDAR_URL.lower().startswith(("http://", "https://")):
+            raise ValueError(
+                "BIQUOTE_CALENDAR_URL vazia ou inválida no .env — configure a URL do calendário Biquote"
+            )
         response = requests.get(CALENDAR_URL, timeout=8)
         response.raise_for_status()
         payload = response.json()
@@ -78,7 +88,7 @@ def get_news_risk(asset: str, now: datetime | None = None) -> dict:
             "source": "biquote",
             "blocked": False,
             "events": [],
-            "warning": f"Calendario economico indisponivel: {type(exc).__name__}.",
+            "warning": f"Calendario economico indisponivel: {_detalhe_erro(exc)}",
         }
 
     events = []
@@ -127,7 +137,7 @@ def get_calendar_events(hours: int = 24, importance: str = "all") -> dict:
             "available": False,
             "source": "biquote",
             "events": [],
-            "warning": f"Calendario economico indisponivel: {type(exc).__name__}.",
+            "warning": f"Calendario economico indisponivel: {_detalhe_erro(exc)}",
         }
 
     now = datetime.now(timezone.utc)

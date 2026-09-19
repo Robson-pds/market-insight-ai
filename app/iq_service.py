@@ -61,25 +61,35 @@ def connect() -> tuple[bool, str]:
 
 
 def reconnect(email: str, password: str) -> tuple[bool, str]:
-    """Troca a conta em memória; credenciais não são persistidas."""
+    """Troca a conta usando APENAS as credenciais do login (ignora o .env).
+
+    A partir da tentativa de login, as credenciais digitadas passam a valer
+    para toda a sessão — inclusive nas reconexões automáticas (connect()
+    usa IQ_EMAIL/IQ_PASSWORD). O cliente atual (possivelmente criado com o
+    .env) é descartado imediatamente; se a nova conexão falhar, o app fica
+    desconectado e as próximas tentativas usam as credenciais do login.
+    """
     global _api, IQ_EMAIL, IQ_PASSWORD
     with _lock:
-        old_api = _api
         try:
-            if old_api is not None:
+            # Descarta o cliente atual/do .env: a partir de agora o login manda.
+            if _api is not None:
                 for asset, interval in list(_streams):
                     try:
-                        old_api.stop_candles_stream(asset, interval)
+                        _api.stop_candles_stream(asset, interval)
                     except Exception:
                         pass
-                _streams.clear()
-            client = IQOptionClient(email.strip(), password)
+            _api = None
+            _streams.clear()
+            # A sessão passa a usar as credenciais digitadas (mesmo se a
+            # conexão falhar, o fallback nunca volta para o .env).
+            IQ_EMAIL, IQ_PASSWORD = email.strip(), password
+            client = IQOptionClient(IQ_EMAIL, IQ_PASSWORD)
             ok, reason = client.connect()
             if not ok:
                 return False, f"Falha: {reason}"
             client.change_balance(ACCOUNT_TYPE)
             _api = client
-            IQ_EMAIL, IQ_PASSWORD = email.strip(), password
             return True, f"Conta conectada na conta {ACCOUNT_TYPE}"
         except Exception as exc:
             return False, f"Exceção: {exc}"

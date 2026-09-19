@@ -4,6 +4,7 @@ Fonte: IQ Option via iq_service.
 """
 from __future__ import annotations
 
+import json
 import time
 import numpy as np
 import pandas as pd
@@ -52,6 +53,24 @@ STRATEGIES = {
         "max_score": 4,
         "indicadores": ["EMA9/EMA21", "MACD", "ADX", "RSI"],
     },
+    "stoch_adx": {
+        "name": "Tendência com estocástico",
+        "description": "Tendência confirmada por EMA e ADX, com estocástico na mesma direção.",
+        "max_score": 3,
+        "indicadores": ["EMA9/EMA21", "ADX", "Stochastic", "vela direcional"],
+    },
+    "banda_stoch": {
+        "name": "Banda com estocástico",
+        "description": "Reversão na banda de Bollinger confirmada por virada do estocástico.",
+        "max_score": 3,
+        "indicadores": ["Bollinger", "Stochastic", "reversão do Stoch"],
+    },
+    "rsi_divergencia": {
+        "name": "Divergência de RSI",
+        "description": "Preço faz extremo mas o RSI não acompanha; reversão na divergência.",
+        "max_score": 3,
+        "indicadores": ["RSI", "preço", "divergência"],
+    },
 }
 
 _SIGNAL_CACHE: dict[tuple[str, str, str], dict] = {}
@@ -79,6 +98,15 @@ STRATEGY_PARAMS_DEFAULT = {
     },
     "momentum": {
         "adx_min": 22, "rsi_call": 52, "rsi_put": 48, "min_score": 3,
+    },
+    "stoch_adx": {
+        "adx_min": 20, "stoch_limite": 30, "min_score": 2,
+    },
+    "banda_stoch": {
+        "stoch_min": 20, "stoch_max": 80, "min_score": 2,
+    },
+    "rsi_divergencia": {
+        "rsi_limite": 45, "min_score": 2,
     },
 }
 
@@ -276,6 +304,38 @@ def _strategy_signal(df: pd.DataFrame, strategy: str) -> dict:
         direction = "CALL" if call else "PUT" if put else "AGUARDAR"
         score = max(call_score, put_score)
         return _signal(direction, score, "Momentum alinhado entre médias, MACD e ADX." if direction != "AGUARDAR" else "Momentum sem alinhamento suficiente.", ["EMA9/EMA21", "MACD", "ADX", "RSI"])
+
+    if strategy == "stoch_adx":
+        trend_up = row["EMA9"] > row["EMA21"] and row["ADX"] >= p["adx_min"]
+        trend_down = row["EMA9"] < row["EMA21"] and row["ADX"] >= p["adx_min"]
+        stoch_call = row["Stoch_K"] > row["Stoch_D"] and row["Stoch_K"] < p["stoch_limite"]
+        stoch_put = row["Stoch_K"] < row["Stoch_D"] and row["Stoch_K"] > 100 - p["stoch_limite"]
+        call_score = sum((trend_up, stoch_call, close > row["Open"]))
+        put_score = sum((trend_down, stoch_put, close < row["Open"]))
+        min_score = int(p["min_score"])
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
+        direction = "CALL" if call else "PUT" if put else "AGUARDAR"
+        return _signal(direction, max(call_score, put_score), "Tendência e estocástico alinhados na mesma direção." if direction != "AGUARDAR" else "Tendência/estocástico sem alinhamento.", ["EMA9/EMA21", "ADX", "Stochastic", "vela direcional"], min_score=min_score)
+
+    if strategy == "banda_stoch":
+        call_score = sum((close <= row["BB_lower"], row["Stoch_K"] < p["stoch_min"], row["Stoch_K"] > prev["Stoch_K"]))
+        put_score = sum((close >= row["BB_upper"], row["Stoch_K"] > p["stoch_max"], row["Stoch_K"] < prev["Stoch_K"]))
+        min_score = int(p["min_score"])
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
+        direction = "CALL" if call else "PUT" if put else "AGUARDAR"
+        return _signal(direction, max(call_score, put_score), "Banda e estocástico confirmando a reversão." if direction != "AGUARDAR" else "Reversão de banda sem confirmação do estocástico.", ["Bollinger", "Stochastic", "reversão do Stoch"], min_score=min_score)
+
+    if strategy == "rsi_divergencia":
+        p2 = df.iloc[-3]
+        call_score = sum((close < p2["Close"] and row["RSI"] > p2["RSI"], row["RSI"] < p["rsi_limite"], close > row["Open"]))
+        put_score = sum((close > p2["Close"] and row["RSI"] < p2["RSI"], row["RSI"] > 100 - p["rsi_limite"], close < row["Open"]))
+        min_score = int(p["min_score"])
+        call = call_score >= min_score and call_score > put_score
+        put = put_score >= min_score and put_score > call_score
+        direction = "CALL" if call else "PUT" if put else "AGUARDAR"
+        return _signal(direction, max(call_score, put_score), "Divergência de RSI favorecendo a reversão." if direction != "AGUARDAR" else "Divergência de RSI sem confirmação.", ["RSI", "preço", "divergência"], min_score=min_score)
 
     raise ValueError(f"Estratégia desconhecida: {strategy}")
 
@@ -618,6 +678,110 @@ def _vote_engolfo(df, i):
     return 0, "Sem engolfo"
 
 
+def _preparar_atr(df):
+    """ATR (14): média do True Range; expansão direcional do candle."""
+    if "ATR" not in df.columns:
+        tr = pd.concat([
+            df["High"] - df["Low"],
+            (df["High"] - df["Close"].shift()).abs(),
+            (df["Low"] - df["Close"].shift()).abs(),
+        ], axis=1).max(axis=1)
+        df = df.assign(ATR=tr.rolling(14).mean())
+    return df
+
+
+def _vote_atr(df, i):
+    a = df["ATR"].iloc[i]
+    o, c = df["Open"].iloc[i], df["Close"].iloc[i]
+    if pd.isna(a) or a <= 0:
+        return 0, "ATR sem dados"
+    corpo = abs(c - o)
+    if corpo > 2.0 * a:
+        if c > o:
+            return 1, f"Expansão ({corpo / a:.1f}x ATR) de alta — CALL"
+        return -1, f"Expansão ({corpo / a:.1f}x ATR) de baixa — PUT"
+    return 0, "Volatilidade normal"
+
+
+def _preparar_momentum(df):
+    """Momentum (10): diferença do fechamento em relação a 10 velas atrás."""
+    if "Momentum" not in df.columns:
+        df = df.assign(Momentum=df["Close"] - df["Close"].shift(10))
+    return df
+
+
+def _vote_momentum(df, i):
+    m = df["Momentum"].iloc[i]
+    if pd.isna(m):
+        return 0, "Momentum sem dados"
+    if m > 0:
+        return 1, f"Momentum +{m:.5f} — CALL"
+    if m < 0:
+        return -1, f"Momentum {m:.5f} — PUT"
+    return 0, "Momentum neutro"
+
+
+def _preparar_cmf(df):
+    """Chaikin Money Flow (20): fluxo monetário com posição no range."""
+    if "CMF" not in df.columns:
+        faixa = (df["High"] - df["Low"]).replace(0, np.nan)
+        mfm = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / faixa
+        vlr = mfm * df["Volume"]
+        vol20 = df["Volume"].rolling(20).sum().replace(0, np.nan)
+        df = df.assign(CMF=vlr.rolling(20).sum() / vol20)
+    return df
+
+
+def _vote_cmf(df, i):
+    c = df["CMF"].iloc[i]
+    if pd.isna(c):
+        return 0, "CMF sem dados"
+    if c > 0.05:
+        return 1, f"CMF {c:.3f} fluxo comprador — CALL"
+    if c < -0.05:
+        return -1, f"CMF {c:.3f} fluxo vendedor — PUT"
+    return 0, f"CMF {c:.3f} neutro"
+
+
+def _preparar_donchian(df):
+    """Donchian (20): máximas e mínimas da janela para detecção de rompimento."""
+    if "DC_high" not in df.columns:
+        df = df.assign(
+            DC_high=df["High"].rolling(20).max(),
+            DC_low=df["Low"].rolling(20).min(),
+        )
+    return df
+
+
+def _vote_donchian(df, i):
+    c = df["Close"].iloc[i]
+    dh = df["DC_high"].iloc[i]
+    dl = df["DC_low"].iloc[i]
+    if pd.isna(dh) or pd.isna(dl):
+        return 0, "Donchian sem dados"
+    if c >= dh:
+        return 1, f"Acima da máxima de 20 velas ({dh:.5f}) — CALL"
+    if c <= dl:
+        return -1, f"Abaixo da mínima de 20 velas ({dl:.5f}) — PUT"
+    return 0, "Dentro da faixa de 20 velas"
+
+
+def _vote_rejeicao(df, i):
+    """Vela de rejeição: sombra longa no topo (PUT) ou na base (CALL)."""
+    o, h, l, c = df["Open"].iloc[i], df["High"].iloc[i], df["Low"].iloc[i], df["Close"].iloc[i]
+    if pd.isna(o) or pd.isna(h) or pd.isna(l) or pd.isna(c):
+        return 0, "Sem dados"
+    faixa = max(h - l, 1e-12)
+    corpo = abs(c - o)
+    pavio_sup = h - max(o, c)
+    pavio_inf = min(o, c) - l
+    if pavio_sup > corpo * 1.5 and pavio_sup > faixa * 0.5:
+        return -1, "Pavio superior longo — rejeição de alta — PUT"
+    if pavio_inf > corpo * 1.5 and pavio_inf > faixa * 0.5:
+        return 1, "Pavio inferior longo — rejeição de baixa — CALL"
+    return 0, "Sem rejeição"
+
+
 # ===========================================================================
 # Registro declarativo de indicadores
 # ===========================================================================
@@ -745,24 +909,114 @@ INDICADORES_PADRAO = [
         "padrao": False,
         "votar": _vote_engolfo,
     },
+    {
+        "id": "atr",
+        "nome": "ATR (14)",
+        "descricao": "Expansão de volatilidade: corpo do candle acima de 2× ATR na direção.",
+        "peso": 0.9,
+        "padrao": False,
+        "preparar": _preparar_atr,
+        "votar": _vote_atr,
+    },
+    {
+        "id": "momentum",
+        "nome": "Momentum (10)",
+        "descricao": "Diferença do fechamento em relação a 10 velas atrás.",
+        "peso": 0.8,
+        "padrao": False,
+        "preparar": _preparar_momentum,
+        "votar": _vote_momentum,
+    },
+    {
+        "id": "cmf",
+        "nome": "CMF (20)",
+        "descricao": "Chaikin Money Flow: fluxo monetário acumulado com volume.",
+        "peso": 0.9,
+        "padrao": False,
+        "preparar": _preparar_cmf,
+        "votar": _vote_cmf,
+    },
+    {
+        "id": "donchian",
+        "nome": "Donchian (20)",
+        "descricao": "Rompimento da máxima/mínima de 20 velas.",
+        "peso": 1.0,
+        "padrao": False,
+        "preparar": _preparar_donchian,
+        "votar": _vote_donchian,
+    },
+    {
+        "id": "rejeicao",
+        "nome": "Vela de rejeição",
+        "descricao": "Sombra longa no topo (PUT) ou na base (CALL).",
+        "peso": 0.8,
+        "padrao": False,
+        "votar": _vote_rejeicao,
+    },
 ]
 
 _INDICADORES_POR_ID = {reg["id"]: reg for reg in INDICADORES_PADRAO}
 
 
 def listar_indicadores() -> list[dict]:
-    """Catálogo de indicadores com o status ativo (persistido no SQLite)."""
+    """Catálogo de indicadores com o status ativo e peso EFETIVO (persistido no SQLite)."""
     ativos = set(_ids_indicadores_ativos())
     return [
         {
             "id": reg["id"],
             "nome": reg["nome"],
             "descricao": reg["descricao"],
-            "peso": reg["peso"],
+            "peso": _peso_indicador(reg["id"]),
+            "peso_padrao": reg["peso"],
             "ativo": reg["id"] in ativos,
         }
         for reg in INDICADORES_PADRAO
     ]
+
+
+def _pesos_customizados() -> dict:
+    """Pesos salvos pelo usuário no SQLite (config 'indicadores_pesos')."""
+    bruto = trade_manager.get_config_valor("indicadores_pesos", "")
+    if not bruto:
+        return {}
+    try:
+        dados = json.loads(bruto)
+    except Exception:
+        return {}
+    if not isinstance(dados, dict):
+        return {}
+    return {str(k).lower(): v for k, v in dados.items()}
+
+
+def _peso_indicador(reg_id: str) -> float:
+    """Peso efetivo: o customizado (se válido) ou o do registro."""
+    custom = _pesos_customizados().get(str(reg_id).lower())
+    if custom is not None:
+        try:
+            peso = float(custom)
+            if 0 < peso <= 10:
+                return round(peso, 2)
+        except (TypeError, ValueError):
+            pass
+    return _INDICADORES_POR_ID[reg_id]["peso"]
+
+
+def set_indicadores_pesos(pesos: dict) -> tuple[bool, str]:
+    """Persiste pesos customizados (id → número entre 0 e 10)."""
+    validos: dict[str, float] = {}
+    for i, peso in (pesos or {}).items():
+        i = str(i or "").strip().lower()
+        if i not in _INDICADORES_POR_ID:
+            continue
+        try:
+            p = float(peso)
+        except (TypeError, ValueError):
+            return False, f"Peso inválido para {i}: {peso}"
+        if not 0 < p <= 10:
+            return False, f"O peso de {i} deve estar entre 0 e 10."
+        validos[i] = round(p, 2)
+    trade_manager.set_config_raw("indicadores_pesos", json.dumps(validos, ensure_ascii=False))
+    return True, "Pesos dos indicadores salvos."
 
 
 def _ids_indicadores_ativos() -> list[str]:
@@ -800,7 +1054,13 @@ def _votar(df: pd.DataFrame, i: int) -> list[dict]:
             voto, motivo = reg["votar"](df, i)
         except Exception:
             voto, motivo = 0, f"{reg['nome']} indisponível"
-        votos.append({"id": reg["id"], "name": reg["nome"], "vote": voto, "reason": motivo, "peso": reg["peso"]})
+        votos.append({
+            "id": reg["id"],
+            "name": reg["nome"],
+            "vote": voto,
+            "reason": motivo,
+            "peso": _peso_indicador(reg["id"]),
+        })
     return votos
 
 
@@ -852,14 +1112,14 @@ def aggregate_votes(votes):
     if coverage < MIN_COVERAGE:
         direction = "NEUTRAL"
 
-    # Confiança = concordância × cobertura
+    # Confiança calculada APENAS sobre os votos direcionais (CALL/PUT) —
+    # os votos neutros não reduzem nem diluem o percentual exibido.
     if direction == "NEUTRAL":
-        confidence = round(coverage * 0.5, 1)  # neutro reflete quão "ativo" o mercado está
+        confidence = round((winner / directional * 100) if directional else 0.0, 1)
         strength = "Sem direção"
     else:
         concordancia = winner / directional if directional > 0 else 0
-        cobertura_factor = min(1.0, coverage / 80.0)   # 80% ou mais = fator 1.0
-        confidence = round(concordancia * cobertura_factor * 100, 1)
+        confidence = round(concordancia * 100, 1)
         if confidence >= 75:
             strength = "Forte"
         elif confidence >= 55:

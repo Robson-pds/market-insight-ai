@@ -363,6 +363,7 @@ def trade_relatorio(periodo: str = "dia"):
 # ===========================================================================
 class IndicadoresRequest(BaseModel):
     ativos: list[str]
+    pesos: dict | None = None
 
 
 @app.get("/api/indicators")
@@ -375,6 +376,10 @@ def indicators_salvar(request: IndicadoresRequest):
     ok, msg = analysis.set_indicadores_ativos(request.ativos)
     if not ok:
         raise HTTPException(400, msg)
+    if request.pesos:
+        ok_p, msg_p = analysis.set_indicadores_pesos(request.pesos)
+        if not ok_p:
+            raise HTTPException(400, msg_p)
     return {"ok": True, "message": msg, "indicadores": analysis.listar_indicadores()}
 
 

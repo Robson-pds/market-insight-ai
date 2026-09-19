@@ -304,7 +304,7 @@ def set_config(dados: dict) -> tuple[bool, str]:
             return False, "Expiração do automático deve ser 1, 5 ou 15 minutos."
         atualizado["auto_expiracao"] = str(auto_exp)
 
-        auto_strategy = str(dados.get("auto_strategy", atuais.get("auto_strategy", "trend_pullback"))).strip()
+        auto_strategy = str(dados.get("auto_strategy", atuais.get("auto_strategy", "trend_pullback"))).strip() or "trend_pullback"
         if auto_strategy not in _ESTRATEGIAS_ANALISE:
             return False, f"Estratégia de análise inválida para o automático: {auto_strategy}"
         atualizado["auto_strategy"] = auto_strategy
@@ -325,7 +325,11 @@ def set_config(dados: dict) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 # Entrada automática (robô)
 # ---------------------------------------------------------------------------
-_ESTRATEGIAS_ANALISE = ("trend_pullback", "breakout", "mean_reversion", "support_resistance", "momentum")
+_ESTRATEGIAS_ANALISE = (
+    "trend_pullback", "breakout", "mean_reversion",
+    "support_resistance", "momentum",
+    "stoch_adx", "banda_stoch", "rsi_divergencia",
+)
 
 _AUTO_ULTIMA_VARREDURA = 0.0
 _AUTO_INTERVALO = 15  # segundos entre varreduras
@@ -788,14 +792,26 @@ def criar_entrada(
         ordem_id = None
         origem_final = origem or ("executada" if executar else "manual")
         payout = None
+        status_final = STATUS_ABERTO
+        observacao_final = observacao
+        falha_execucao = None
 
         if executar:
             # Envia a ordem para a IQ Option
             ok, retorno = iq_service.buy(ativo, valor_efetivo, direcao, expiracao)
-            if not ok:
-                return False, f"Falha ao executar a ordem: {retorno}"
-            ordem_id = str(retorno)
-            payout = iq_service.get_payout(ativo, expiracao)
+            if ok:
+                ordem_id = str(retorno)
+                payout = iq_service.get_payout(ativo, expiracao)
+            else:
+                # A ordem PODE ter saído mesmo com resposta de falha (timeout
+                # do websocket, "purchasing window closed", exceção pós-envio).
+                # Registra a tentativa como ERRO para o histórico nunca perder
+                # o rastro; o usuário pode apurar/marcar manualmente depois.
+                falha_execucao = retorno
+                status_final = "ERRO"
+                observacao_final = (
+                    f"{observacao or 'execução automática'} | falha de execução: {retorno}"
+                ).strip()
 
         with _db() as conn:
             cursor = conn.execute(
@@ -808,8 +824,8 @@ def criar_entrada(
                 """,
                 (
                     agora, agorats, ativo, direcao, valor_efetivo, expiracao,
-                    estrategia, config["conta"], STATUS_ABERTO,
-                    payout, ordem_id, origem_final, observacao or None,
+                    estrategia, config["conta"], status_final,
+                    payout, ordem_id, origem_final, observacao_final or None,
                     ciclo_nivel, ciclo_lucro,
                 ),
             )
@@ -823,6 +839,9 @@ def criar_entrada(
             daemon=True,
         ).start()
 
+    if falha_execucao is not None:
+        # A tentativa ficou registrada como ERRO; o front exibe a falha.
+        return False, f"Falha ao executar a ordem: {falha_execucao} (tentativa registrada no histórico como ERRO)."
     return True, entrada
 
 

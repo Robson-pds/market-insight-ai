@@ -2,12 +2,16 @@
 
 Monta um contexto com os dados atuais da análise (sinais por expiração,
 votos dos indicadores, preço, notícias) e envia para um modelo de linguagem
-(OpenAI por padrão; qualquer endpoint compatível via AI_BASE_URL, ex.: Ollama
+(OpenAI por padrão; qualquer endpoint compatível via base_url, ex.: Ollama
 ou LM Studio). A resposta é devolvida estruturada:
 {direcao, confianca, justificativa, riscos}.
 
-Sem OPENAI_API_KEY o módulo retorna None e a interface informa que a função
-está desativada. Nunca é recomendação de investimento.
+A configuração (link http, modelo, token, headers adicionais) pode ser
+definida no .env OU salva pela aba de configuração da interface (persistida
+no SQLite; a config salva tem prioridade sobre o .env).
+
+Sem token o módulo retorna None e a interface informa que a função está
+desativada. Nunca é recomendação de investimento.
 """
 from __future__ import annotations
 
@@ -15,6 +19,7 @@ import json
 import os
 
 import analysis
+from trade_manager import get_config_valor, set_config_raw
 
 try:
     from dotenv import load_dotenv
@@ -22,12 +27,121 @@ try:
 except Exception:
     pass
 
-AI_MODELO = os.getenv("AI_MODEL", "gpt-4o-mini")
-AI_BASE_URL = os.getenv("AI_BASE_URL")  # opcional: Ollama/LM Studio etc.
+# Chaves usadas na tabela de configuração compartilhada com o trade_manager
+_CHAVE_BASE_URL = "ai_base_url"
+_CHAVE_MODEL = "ai_model"
+_CHAVE_API_KEY = "ai_api_key"
+_CHAVE_HEADERS = "ai_headers"
+
+_DEFAULT_MODEL = "gpt-4o-mini"
+
+
+def _config() -> dict:
+    """Config efetiva: a config salva na UI tem prioridade sobre o .env."""
+    return {
+        "base_url": str(get_config_valor(_CHAVE_BASE_URL) or "").strip()
+        or (os.getenv("AI_BASE_URL") or "").strip(),
+        "model": str(get_config_valor(_CHAVE_MODEL) or "").strip()
+        or os.getenv("AI_MODEL") or _DEFAULT_MODEL,
+        "api_key": str(get_config_valor(_CHAVE_API_KEY) or "").strip()
+        or (os.getenv("OPENAI_API_KEY") or "").strip(),
+        "headers": str(get_config_valor(_CHAVE_HEADERS) or "").strip(),
+    }
 
 
 def disponivel() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY"))
+    return bool(_config()["api_key"])
+
+
+def config_publica() -> dict:
+    """Config para exibir na interface — nunca devolve o token completo."""
+    cfg = _config()
+    chave = cfg["api_key"]
+    return {
+        "base_url": cfg["base_url"],
+        "model": cfg["model"],
+        "api_key_set": bool(chave),
+        "api_key_tail": chave[-4:] if chave else "",
+        "headers": cfg["headers"],
+    }
+
+
+def _parse_headers(dados) -> dict:
+    """Converte headers (dict ou string JSON) em dict; {} quando vazio."""
+    if dados in (None, "", {}):
+        return {}
+    if isinstance(dados, dict):
+        return {str(k): str(v) for k, v in dados.items()}
+    texto = str(dados).strip()
+    if not texto:
+        return {}
+    try:
+        obj = json.loads(texto)
+    except ValueError as exc:
+        raise ValueError(f"Headers adicionais não são um JSON válido: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ValueError('Headers adicionais devem ser um objeto JSON (ex.: {"X-Key": "valor"}).')
+    return {str(k): str(v) for k, v in obj.items()}
+
+
+def _config_com_overrides(dados: dict | None) -> dict:
+    """Config efetiva aplicando overrides temporários (sem persistir)."""
+    cfg = _config()
+    if not dados:
+        return cfg
+    if "base_url" in dados:
+        cfg["base_url"] = str(dados["base_url"] or "").strip()
+    if "model" in dados:
+        cfg["model"] = str(dados["model"] or "").strip() or _DEFAULT_MODEL
+    if "api_key" in dados:
+        cfg["api_key"] = str(dados["api_key"] or "").strip()
+    if "headers" in dados:
+        cfg["headers"] = json.dumps(_parse_headers(dados["headers"]), ensure_ascii=False)
+    return cfg
+
+
+def salvar_config(dados: dict) -> tuple[bool, str]:
+    """Persiste a configuração da IA no SQLite.
+
+    Aceita um dict com as chaves: base_url, model, api_key e headers
+    (dict ou string JSON). Campos ausentes (None) não alteram o valor salvo;
+    string vazia limpa a chave (voltando a valer o .env quando houver).
+    """
+    permitidas = {"base_url", "model", "api_key", "headers"}
+    desconhecidas = set(dados) - permitidas
+    if desconhecidas:
+        return False, f"Campos desconhecidos: {', '.join(sorted(desconhecidas))}"
+    try:
+        _parse_headers(dados.get("headers"))  # valida antes de gravar
+        mapeamento = {
+            "base_url": _CHAVE_BASE_URL,
+            "model": _CHAVE_MODEL,
+            "api_key": _CHAVE_API_KEY,
+            "headers": _CHAVE_HEADERS,
+        }
+        for campo, chave in mapeamento.items():
+            if campo not in dados:
+                continue
+            valor = dados[campo]
+            if campo == "headers":
+                valor = json.dumps(_parse_headers(valor), ensure_ascii=False)
+            else:
+                valor = str(valor or "").strip()
+            set_config_raw(chave, valor)
+    except ValueError as exc:
+        return False, str(exc)
+    return True, "Configuração da IA salva."
+
+
+def _criar_cliente(cfg: dict, timeout: int):
+    from openai import OpenAI
+    kwargs = {"api_key": cfg["api_key"], "timeout": timeout}
+    if cfg.get("base_url"):
+        kwargs["base_url"] = cfg["base_url"]
+    headers = _parse_headers(cfg.get("headers"))
+    if headers:
+        kwargs["default_headers"] = headers
+    return OpenAI(**kwargs)
 
 
 def _montar_contexto(ativo: str, strategy: str) -> str:
@@ -94,8 +208,8 @@ def _parse_json_resposta(texto: str) -> dict | None:
 
 def consultar(ativo: str, strategy: str, instrucao_extra: str = "", timeout: int = 60) -> dict | None:
     """Consulta a IA e devolve a análise estruturada (ou None se indisponível)."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    cfg = _config()
+    if not cfg["api_key"]:
         return None
 
     contexto = _montar_contexto(ativo, strategy)
@@ -114,13 +228,9 @@ def consultar(ativo: str, strategy: str, instrucao_extra: str = "", timeout: int
         sistema += " Instruções adicionais do usuário: " + instrucao
 
     try:
-        from openai import OpenAI
-        kwargs = {"api_key": api_key, "timeout": timeout}
-        if AI_BASE_URL:
-            kwargs["base_url"] = AI_BASE_URL
-        cliente = OpenAI(**kwargs)
+        cliente = _criar_cliente(cfg, timeout)
         resposta = cliente.chat.completions.create(
-            model=AI_MODELO,
+            model=cfg["model"],
             temperature=0.2,
             messages=[
                 {"role": "system", "content": sistema},
@@ -148,6 +258,32 @@ def consultar(ativo: str, strategy: str, instrucao_extra: str = "", timeout: int
         "confianca": round(confianca, 1),
         "justificativa": str(dados_json.get("justificativa", "")).strip(),
         "riscos": dados_json.get("riscos") or [],
-        "modelo": AI_MODELO,
+        "modelo": cfg["model"],
         "contexto": contexto,
     }
+
+
+def testar(dados: dict | None = None, timeout: int = 15) -> dict:
+    """Testa a conexão com a configuração fornecida (ou a salva) sem persistir."""
+    try:
+        cfg = _config_com_overrides(dados)
+    except ValueError as exc:
+        return {"ok": False, "erro": str(exc)}
+    if not cfg["api_key"]:
+        return {"ok": False, "erro": "Token não configurado. Informe o token (ou OPENAI_API_KEY no .env)."}
+    try:
+        cliente = _criar_cliente(cfg, timeout)
+        resposta = cliente.chat.completions.create(
+            model=cfg["model"],
+            max_tokens=8,
+            messages=[{"role": "user", "content": "Responda apenas com a palavra OK."}],
+        )
+        texto = (resposta.choices[0].message.content or "").strip()
+        return {
+            "ok": True,
+            "modelo": cfg["model"],
+            "base_url": cfg["base_url"] or "(padrão da OpenAI)",
+            "resposta": texto[:120],
+        }
+    except Exception as exc:
+        return {"ok": False, "erro": str(exc)}

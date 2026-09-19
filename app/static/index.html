@@ -239,6 +239,42 @@
       </div>
     </div>
 
+    <div class="config-grid">
+      <div class="card" style="grid-column: 1 / -1;">
+        <div class="config-header" style="margin-bottom: 14px;">
+          <div>
+            <span class="eyebrow">SEGUNDA OPINIÃO</span>
+            <h3>🤖 IA</h3>
+            <p class="muted">Endpoint compatível com a API OpenAI (OpenAI, Ollama, LM Studio…). Se salvar na aba, a configuração da IA tem prioridade sobre o .env. Deixe em branco para usar as variáveis do .env.</p>
+          </div>
+        </div>
+        <div class="config-field">
+          <label for="ai-base-url">LINK / ENDPOINT HTTP</label>
+          <input id="ai-base-url" type="url" placeholder="https://api.openai.com/v1 ou http://localhost:11434/v1" autocomplete="off" />
+          <p class="muted small">Vazio = usa AI_BASE_URL do .env (ou o endpoint padrão da OpenAI).</p>
+        </div>
+        <div class="config-field">
+          <label for="ai-model">MODELO</label>
+          <input id="ai-model" type="text" placeholder="gpt-4o-mini" autocomplete="off" />
+        </div>
+        <div class="config-field">
+          <label for="ai-api-key">TOKEN / API KEY</label>
+          <input id="ai-api-key" type="password" placeholder="sk-…" autocomplete="off" />
+          <p class="muted small" id="ai-api-key-hint">Vazio = usa OPENAI_API_KEY do .env.</p>
+        </div>
+        <div class="config-field">
+          <label for="ai-headers">HEADERS ADICIONAIS (JSON)</label>
+          <textarea id="ai-headers" rows="3" placeholder='{"X-Custom": "valor"}'></textarea>
+          <p class="muted small">Headers enviados em todas as chamadas (ex.: autorização extra em endpoints locais).</p>
+        </div>
+        <div class="config-ai-actions">
+          <button id="btn-save-ai-config" class="btn-primary">Salvar configuração da IA</button>
+          <button id="btn-test-ai" class="btn-secondary">Testar conexão</button>
+        </div>
+        <div id="ai-status" class="status hidden"></div>
+      </div>
+    </div>
+
     <div class="config-save-bar">
       <button id="btn-save-config" class="btn-primary">Salvar configurações</button>
     </div>

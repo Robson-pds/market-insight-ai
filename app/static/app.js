@@ -50,7 +50,10 @@ function switchView(view) {
     loadTradeConfig();
     loadEntries();
   }
-  if (view === "config") loadTradeConfig();
+  if (view === "config") {
+    loadTradeConfig();
+    loadAiConfig();
+  }
   if (view === "relatorio") loadReport();
   if (view === "strategies") loadStrategiesView();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1523,5 +1526,86 @@ async function saveIndicators() {
 }
 
 $("btn-indicators-save").addEventListener("click", saveIndicators);
+
+/* ============================================================
+   IA — configuração (link, modelo, token, headers adicionais)
+============================================================ */
+$("btn-save-ai-config").addEventListener("click", saveAiConfig);
+$("btn-test-ai").addEventListener("click", testAiConfig);
+
+async function loadAiConfig() {
+  try {
+    const r = await fetch("/api/ai/config");
+    if (!r.ok) throw new Error("Falha ao carregar configuração da IA");
+    renderAiConfig(await r.json());
+  } catch (e) {
+    console.error("Erro ao carregar configuração da IA:", e);
+  }
+}
+
+function renderAiConfig(d) {
+  $("ai-base-url").value = d.base_url || "";
+  $("ai-model").value = d.model || "";
+  $("ai-api-key").value = "";
+  $("ai-headers").value = d.headers || "";
+  if (d.api_key_set) {
+    $("ai-api-key-hint").textContent =
+      `Token salvo (termina em …${d.api_key_tail}). Deixe em branco para mantê-lo ou digite um novo token para substituir.`;
+  } else {
+    $("ai-api-key-hint").textContent = "Vazio = usa OPENAI_API_KEY do .env.";
+  }
+}
+
+function aiFormData() {
+  return {
+    base_url: $("ai-base-url").value.trim(),
+    model: $("ai-model").value.trim(),
+    api_key: $("ai-api-key").value.trim(),
+    headers: $("ai-headers").value.trim(),
+  };
+}
+
+async function saveAiConfig() {
+  const status = $("ai-status");
+  setStatus(status, "loading", "Salvando configuração da IA…");
+  try {
+    const body = aiFormData();
+    if (!body.api_key) delete body.api_key; // campo vazio mantém o token salvo/do .env
+    const r = await fetch("/api/ai/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || d.detail || "Falha ao salvar");
+    renderAiConfig(d);
+    setStatus(status, "", d.message);
+    setTimeout(() => status.classList.add("hidden"), 4000);
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  }
+}
+
+async function testAiConfig() {
+  const status = $("ai-status");
+  setStatus(status, "loading", "Testando conexão… (pode levar alguns segundos)");
+  try {
+    const r = await fetch("/api/ai/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(aiFormData()),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Falha ao testar");
+    if (!d.ok) {
+      setStatus(status, "error", `Falha na conexão: ${d.erro}`);
+      return;
+    }
+    setStatus(status, "", `✓ Conectado (${d.modelo} · ${d.base_url}) — resposta: ${d.resposta || "OK"}`);
+    setTimeout(() => status.classList.add("hidden"), 6000);
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  }
+}
 
 boot();

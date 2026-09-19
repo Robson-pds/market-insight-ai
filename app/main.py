@@ -411,7 +411,7 @@ def ai_analise(request: AiAnaliseRequest):
     """Envia parâmetros + lógica atuais para a IA e devolve a análise."""
     _ensure_connected()
     if not ai_advisor.disponivel():
-        raise HTTPException(503, "OPENAI_API_KEY não configurada no .env.")
+        raise HTTPException(503, "Token da IA não configurado (aba Configuração → IA ou OPENAI_API_KEY no .env).")
     strategy = request.strategy
     if strategy not in analysis.STRATEGIES:
         raise HTTPException(400, f"Estratégia desconhecida: {strategy}")
@@ -419,3 +419,37 @@ def ai_analise(request: AiAnaliseRequest):
     if ativo not in iq_service.list_assets():
         raise HTTPException(404, f"Ativo desconhecido: {ativo}")
     return ai_advisor.consultar(ativo, strategy, request.instrucao_extra or "")
+
+
+class AiConfigRequest(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    headers: dict | str | None = None
+
+
+class AiTestRequest(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    headers: dict | str | None = None
+
+
+@app.get("/api/ai/config")
+def ai_config():
+    """Config da IA para a aba Configuração (o token nunca é devolvido inteiro)."""
+    return ai_advisor.config_publica()
+
+
+@app.put("/api/ai/config")
+def ai_config_salvar(request: AiConfigRequest):
+    ok, msg = ai_advisor.salvar_config(request.model_dump(exclude_none=True))
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "message": msg, **ai_advisor.config_publica()}
+
+
+@app.post("/api/ai/test")
+def ai_test(request: AiTestRequest):
+    """Testa a conexão com a IA usando os valores informados (sem persistir)."""
+    return ai_advisor.testar(request.model_dump(exclude_none=True) or None)

@@ -462,6 +462,22 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
 .btn-primary:hover { filter: brightness(1.08); }
 .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 
+.btn-secondary {
+  padding: 12px 22px; border: 1px solid var(--border); border-radius: 10px;
+  background: transparent; color: var(--text); font-weight: 600;
+  cursor: pointer; font-size: 14px; font-family: inherit;
+}
+.btn-secondary:hover { border-color: var(--cyan); color: var(--cyan); }
+
+.config-ai-actions {
+  display: flex; gap: 10px; flex-wrap: wrap; margin-top: 6px;
+}
+.config-field textarea {
+  width: 100%; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: rgba(13,24,36,0.6);
+  color: var(--text); font: inherit; font-size: 13px; resize: vertical;
+}
+
 .status {
   padding: 14px 18px; border-radius: 10px; margin-bottom: 18px;
   background: var(--panel); border: 1px solid var(--border);

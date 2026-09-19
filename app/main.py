@@ -1,4 +1,11 @@
 import os
+import sys
+
+# A Vercel importa "app/main.py" sem colocar o pacote app/ no sys.path;
+# o insert abaixo garante que os módulos internos (iq_service, analysis,
+# news_service, trade_manager, ai_advisor) sejam encontrados em qualquer
+# ambiente (local com --app-dir, Docker ou serverless).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException

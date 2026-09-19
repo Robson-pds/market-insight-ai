@@ -478,6 +478,21 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
   color: var(--text); font: inherit; font-size: 13px; resize: vertical;
 }
 
+.entry-quick-block {
+  margin-top: 12px; padding: 12px; border: 1px solid var(--border);
+  border-radius: 10px; background: rgba(13,24,36,0.5);
+}
+.quick-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.quick-row select, .quick-row input {
+  flex: 1; min-width: 90px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: rgba(13,24,36,0.6);
+  color: var(--text); font: inherit; font-size: 13px;
+}
+.expiry-payout {
+  display: block; margin-top: 6px; font-size: 11px; color: var(--cyan);
+  letter-spacing: 0.4px;
+}
+
 .status {
   padding: 14px 18px; border-radius: 10px; margin-bottom: 18px;
   background: var(--panel); border: 1px solid var(--border);
@@ -895,6 +910,12 @@ h1 { margin: 0; font-size: 16px; letter-spacing: 0.3px; }
   background: var(--panel-2);
   border-radius: 6px; padding: 3px 7px;
   white-space: nowrap;
+}
+.ind-peso-input {
+  width: 58px; padding: 3px 6px; margin-left: 3px;
+  border-radius: 6px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text);
+  font: inherit; font-size: 11px; text-align: center;
 }
 
 /* ============================================================

@@ -243,6 +243,77 @@
       <div class="card" style="grid-column: 1 / -1;">
         <div class="config-header" style="margin-bottom: 14px;">
           <div>
+            <span class="eyebrow">ROBÔ</span>
+            <h3>🤖 Entrada automática</h3>
+            <p class="muted">Varre os pares no horário configurado e executa quando o sinal da estratégia for CALL/PUT com payout ≥ mínimo. Usa a conta acima e o valor de entrada da configuração (base, sem Soros). Mantenha desativada se não quer operações inesperadas.</p>
+          </div>
+        </div>
+        <div class="config-field">
+          <label for="auto-enabled">AUTOMAÇÃO</label>
+          <select id="auto-enabled">
+            <option value="0">Desativada</option>
+            <option value="1">Ativada</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label for="auto-payout-min">PAYOUT MÍNIMO (0 a 1)</label>
+          <input id="auto-payout-min" type="number" min="0" max="1" step="0.01" />
+          <p class="muted small">Ex.: 0.80 = só executa com payout ≥ 80%. Par sem payout disponível é ignorado.</p>
+        </div>
+        <div class="config-field">
+          <label for="auto-confianca-min">CONFIANÇA MÍNIMA (%)</label>
+          <input id="auto-confianca-min" type="number" min="0" max="100" step="1" />
+          <p class="muted small">Confiança dos votos dos indicadores (0-100). Só entra com confiança ≥ este valor.</p>
+        </div>
+        <div class="config-field">
+          <label for="auto-direcao">DIREÇÃO PERMITIDA</label>
+          <select id="auto-direcao">
+            <option value="ambos">Ambas (CALL e PUT)</option>
+            <option value="call">Só CALL</option>
+            <option value="put">Só PUT</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label for="auto-entrada">QUANDO ENTRAR</label>
+          <select id="auto-entrada">
+            <option value="atual">Na vela atual</option>
+            <option value="proxima">Na próxima vela</option>
+          </select>
+          <p class="muted small">"Próxima vela" aguarda a vela atual fechar antes de executar.</p>
+        </div>
+        <div class="config-field">
+          <label for="auto-pares">PARES NO AUTOMÁTICO (separados por vírgula)</label>
+          <input id="auto-pares" type="text" placeholder="EURUSD, GBPUSD, EURUSD-OTC" autocomplete="off" />
+        </div>
+        <div class="config-field">
+          <label for="auto-horarios">HORÁRIO POR PAR (uma linha por par)</label>
+          <textarea id="auto-horarios" rows="3" placeholder="EURUSD 08:00-12:00, 18:00-20:00&#10;GBPUSD 07:00-10:00"></textarea>
+          <p class="muted small">Formato: PAR HH:MM-HH:MM (vírgula = vários intervalos; vazio = o dia todo). Hora local do servidor.</p>
+        </div>
+        <div class="config-field">
+          <label for="auto-max-simultaneas">ENTRADAS SIMULTÂNEAS MÁXIMAS</label>
+          <input id="auto-max-simultaneas" type="number" min="1" max="20" step="1" />
+        </div>
+        <div class="config-field">
+          <label for="auto-expiry">EXPIRAÇÃO NO AUTOMÁTICO</label>
+          <select id="auto-expiry">
+            <option value="1">1 minuto</option>
+            <option value="5">5 minutos</option>
+            <option value="15">15 minutos</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label for="auto-strategy">ESTRATÉGIA DE ANÁLISE</label>
+          <select id="auto-strategy"></select>
+          <p class="muted small" id="auto-strategy-desc">—</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="config-grid">
+      <div class="card" style="grid-column: 1 / -1;">
+        <div class="config-header" style="margin-bottom: 14px;">
+          <div>
             <span class="eyebrow">SEGUNDA OPINIÃO</span>
             <h3>🤖 IA</h3>
             <p class="muted">Endpoint compatível com a API OpenAI (OpenAI, Ollama, LM Studio…). Se salvar na aba, a configuração da IA tem prioridade sobre o .env. Deixe em branco para usar as variáveis do .env.</p>
@@ -384,25 +455,44 @@
           <article class="expiry-card neutral" data-expiry-card="1min">
             <div class="expiry-head"><span>EXPIRAÇÃO 1 MINUTO</span><span class="signal-lock" id="lock-1min"></span></div>
             <div class="expiry-main"><span class="expiry-signal" id="signal-1min">AGUARDAR</span><span class="expiry-timer" id="timer-1min">--:--</span></div>
+            <span class="expiry-payout" id="payout-1min"></span>
             <p id="reason-1min">Aguardando análise.</p>
             <div class="vote-bar hidden" id="votes-1min"></div>
           </article>
           <article class="expiry-card neutral" data-expiry-card="5min">
             <div class="expiry-head"><span>EXPIRAÇÃO 5 MINUTOS</span><span class="signal-lock" id="lock-5min"></span></div>
             <div class="expiry-main"><span class="expiry-signal" id="signal-5min">AGUARDAR</span><span class="expiry-timer" id="timer-5min">--:--</span></div>
+            <span class="expiry-payout" id="payout-5min"></span>
             <p id="reason-5min">Aguardando análise.</p>
             <div class="vote-bar hidden" id="votes-5min"></div>
           </article>
           <article class="expiry-card neutral" data-expiry-card="15min">
             <div class="expiry-head"><span>EXPIRAÇÃO 15 MINUTOS</span><span class="signal-lock" id="lock-15min"></span></div>
             <div class="expiry-main"><span class="expiry-signal" id="signal-15min">AGUARDAR</span><span class="expiry-timer" id="timer-15min">--:--</span></div>
+            <span class="expiry-payout" id="payout-15min"></span>
             <p id="reason-15min">Aguardando análise.</p>
             <div class="vote-bar hidden" id="votes-15min"></div>
           </article>
         </div>
 
         <div class="analysis-note" id="analysis-note">O sinal só muda quando o prazo correspondente expirar.</div>
-        <button id="quick-entry" class="btn-primary entry-quick hidden">🎯 Entrar com este sinal (1m)</button>
+
+        <!-- Entrada rápida com este sinal -->
+        <div class="entry-quick-block hidden" id="quick-entry-block">
+          <div class="quick-row">
+            <select id="quick-expiry">
+              <option value="1">1 minuto</option>
+              <option value="5">5 minutos</option>
+              <option value="15">15 minutos</option>
+            </select>
+            <input id="quick-value" type="number" min="0.01" step="0.01" placeholder="Valor (US$)" autocomplete="off" />
+          </div>
+          <div class="quick-row">
+            <button id="quick-execute" class="btn-primary">▶ Executar agora</button>
+            <button id="quick-entry" class="btn-secondary">Revisar na aba Entradas</button>
+          </div>
+          <p class="muted small">Executa direto na IQ Option, sem confirmação (a direção vem do sinal da expiração escolhida).</p>
+        </div>
 
         <!-- IA — segunda opinião -->
         <div class="card ai-block">

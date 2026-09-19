@@ -187,7 +187,13 @@ def candles(asset: str, interval: int = 300, count: int = 200):
 def analyze(asset: str, strategy: str = "trend_pullback"):
     _ensure_connected()
     try:
-        return analysis.analyze_asset(asset, strategy)
+        resultado = analysis.analyze_asset(asset, strategy)
+        # Payout (multiplicador 0-1) por expiração — exibido na tela de análise
+        resultado["payouts"] = {
+            rotulo: iq_service.get_payout(asset, int(minutos))
+            for rotulo, minutos in (("1min", 1), ("5min", 5), ("15min", 15))
+        }
+        return resultado
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
@@ -235,6 +241,17 @@ class TradeConfigRequest(BaseModel):
     valor_max_perda: float | None = None
     estrategia: str | None = None
     soros_nivel: int | None = None
+    # Entrada automática
+    auto_ativado: str | int | None = None
+    auto_payout_min: float | None = None
+    auto_confianca_min: float | None = None
+    auto_direcao: str | None = None
+    auto_entrada: str | None = None
+    auto_pares: str | list | None = None
+    auto_horarios: str | dict | None = None
+    auto_max_simultaneas: int | None = None
+    auto_expiracao: int | None = None
+    auto_strategy: str | None = None
 
 
 class NovaEntradaRequest(BaseModel):
@@ -346,6 +363,7 @@ def trade_relatorio(periodo: str = "dia"):
 # ===========================================================================
 class IndicadoresRequest(BaseModel):
     ativos: list[str]
+    pesos: dict | None = None
 
 
 @app.get("/api/indicators")
@@ -358,6 +376,10 @@ def indicators_salvar(request: IndicadoresRequest):
     ok, msg = analysis.set_indicadores_ativos(request.ativos)
     if not ok:
         raise HTTPException(400, msg)
+    if request.pesos:
+        ok_p, msg_p = analysis.set_indicadores_pesos(request.pesos)
+        if not ok_p:
+            raise HTTPException(400, msg_p)
     return {"ok": True, "message": msg, "indicadores": analysis.listar_indicadores()}
 
 

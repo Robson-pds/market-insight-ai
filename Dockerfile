@@ -5,7 +5,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY app/ ./app/
+COPY run.py .
+COPY .env.example .
+
+# Permite `uvicorn main:app` a partir do pacote app/
+ENV PYTHONPATH=/app/app
 
 EXPOSE 8000
 

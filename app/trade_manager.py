@@ -38,14 +38,14 @@ def _resolver_db_path() -> str:
     """Escolhe o local do SQLite conforme o ambiente.
 
     - MARKET_DB_PATH definida → usa esse caminho (ou ':memory:');
-    - diretório do projeto gravável (uso local) → 'market.db' ao lado do código;
+    - raiz do projeto gravável (uso local) → 'market.db' na raiz do repositório;
     - ambiente serverless/read-only (ex.: Vercel) → '/tmp/market.db' (efêmero);
     - sem nenhum local gravável → SQLite em memória (efêmero por processo).
     """
     env = os.getenv("MARKET_DB_PATH")
     if env:
         return ":memory:" if env.strip().lower() == ":memory:" else os.path.abspath(env)
-    candidato = Path(__file__).resolve().parent / "market.db"
+    candidato = Path(__file__).resolve().parent.parent / "market.db"
     if _dir_gravavel(candidato.parent):
         return str(candidato)
     tmp = Path(tempfile.gettempdir()) / "market.db"

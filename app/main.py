@@ -1,3 +1,5 @@
+import os
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -37,7 +39,11 @@ app = FastAPI(
     version="2.0",
     lifespan=lifespan,
 )
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+    name="static",
+)
 
 
 class LoginRequest(BaseModel):
@@ -47,7 +53,7 @@ class LoginRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
 
 @app.get("/api/connect")

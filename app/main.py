@@ -1,3 +1,12 @@
+import os
+import sys
+
+# A Vercel importa "app/main.py" sem colocar o pacote app/ no sys.path;
+# o insert abaixo garante que os módulos internos (iq_service, analysis,
+# news_service, trade_manager, ai_advisor) sejam encontrados em qualquer
+# ambiente (local com --app-dir, Docker ou serverless).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -37,7 +46,11 @@ app = FastAPI(
     version="2.0",
     lifespan=lifespan,
 )
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+    name="static",
+)
 
 
 class LoginRequest(BaseModel):
@@ -47,7 +60,7 @@ class LoginRequest(BaseModel):
 
 @app.get("/")
 def root():
-    return FileResponse("static/index.html")
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
 
 @app.get("/api/connect")
@@ -105,6 +118,7 @@ def _analyze_opportunity(asset: str, strategy: str) -> dict:
     conflict_count = len(directional) - consensus_count
     return {
         "asset": asset,
+        "market": iq_service.get_market_status(asset),
         "score": score,
         "max_score": analysis.STRATEGIES[strategy]["max_score"] * 3,
         "consensus_count": consensus_count,
@@ -201,6 +215,7 @@ def radar(strategy: str = "trend_pullback"):
             strat = r["signals"]["1min"]
             results.append({
                 "asset": a,
+                "market": iq_service.get_market_status(a),
                 "recommendation": strat.get("signal", "AGUARDAR"),
                 "score": strat.get("score", 0),
                 "reason": strat.get("reason", ""),
@@ -403,7 +418,7 @@ def ai_analise(request: AiAnaliseRequest):
     """Envia parâmetros + lógica atuais para a IA e devolve a análise."""
     _ensure_connected()
     if not ai_advisor.disponivel():
-        raise HTTPException(503, "OPENAI_API_KEY não configurada no .env.")
+        raise HTTPException(503, "Token da IA não configurado (aba Configuração → IA ou OPENAI_API_KEY no .env).")
     strategy = request.strategy
     if strategy not in analysis.STRATEGIES:
         raise HTTPException(400, f"Estratégia desconhecida: {strategy}")
@@ -411,3 +426,37 @@ def ai_analise(request: AiAnaliseRequest):
     if ativo not in iq_service.list_assets():
         raise HTTPException(404, f"Ativo desconhecido: {ativo}")
     return ai_advisor.consultar(ativo, strategy, request.instrucao_extra or "")
+
+
+class AiConfigRequest(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    headers: dict | str | None = None
+
+
+class AiTestRequest(BaseModel):
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    headers: dict | str | None = None
+
+
+@app.get("/api/ai/config")
+def ai_config():
+    """Config da IA para a aba Configuração (o token nunca é devolvido inteiro)."""
+    return ai_advisor.config_publica()
+
+
+@app.put("/api/ai/config")
+def ai_config_salvar(request: AiConfigRequest):
+    ok, msg = ai_advisor.salvar_config(request.model_dump(exclude_none=True))
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True, "message": msg, **ai_advisor.config_publica()}
+
+
+@app.post("/api/ai/test")
+def ai_test(request: AiTestRequest):
+    """Testa a conexão com a IA usando os valores informados (sem persistir)."""
+    return ai_advisor.testar(request.model_dump(exclude_none=True) or None)

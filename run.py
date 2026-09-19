@@ -68,7 +68,8 @@ def main():
 
     subprocess.run([
         sys.executable, "-m", "uvicorn",
-        "main:app", "--host", host, "--port", port,
+        "main:app", "--app-dir", str(ROOT / "app"),
+        "--host", host, "--port", port,
     ])
 
 

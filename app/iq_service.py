@@ -169,17 +169,60 @@ def get_payout(ativo: str, expiracao_min: int) -> float | None:
     return info.get(opcao) or info.get("turbo") or info.get("binary")
 
 
-# Lista padrão de ativos (forex) disponíveis na IQ Option
+# Lista padrão de pares (forex) disponíveis na IQ Option
 DEFAULT_ASSETS = [
     "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD",
     "AUDUSD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY",
     "EURCHF", "AUDJPY", "CADJPY", "CHFJPY", "EURAUD",
 ]
 
+# OTC: mesmos pares no mercado OTC da IQ Option (horário próprio; ficam
+# fechados quando o ambiente OTC não está no ar). Analisados como os normais.
+OTC_SUFFIX = "-OTC"
+DEFAULT_ASSETS_OTC = [f"{asset}{OTC_SUFFIX}" for asset in DEFAULT_ASSETS]
+
 
 def list_assets() -> list[str]:
-    """Retorna lista fixa de pares — evita dependência do init interno."""
-    return list(DEFAULT_ASSETS)
+    """Retorna lista fixa de pares (normais + OTC) — evita dependência do init interno."""
+    return [*DEFAULT_ASSETS, *DEFAULT_ASSETS_OTC]
+
+
+# Cache do status de mercado (get_asset_metadata é pesado: várias chamadas
+# à IQ Option; por isso a renovação é espaçada e falhas viram status desconhecido).
+_metadata_cache: dict = {"ts": 0.0, "open_map": {}}
+METADATA_CACHE_SECONDS = 60
+
+
+def get_market_status(asset: str) -> str | None:
+    """Situação do par na IQ Option: 'aberto', 'fechado' ou None (desconhecido).
+
+    Usa o diretório consolidado de ativos (get_asset_metadata), que cobre
+    turbo/binary/forex/cfd/crypto e tickers OTC (ex.: EURUSD-OTC), com cache
+    de 60s. Retorna None quando desconectado, quando a IQ Option não responde
+    ou quando o ticker não consta no diretório.
+    """
+    global _metadata_cache
+    if _api is None:
+        return None
+    try:
+        now = time.time()
+        if now - _metadata_cache["ts"] > METADATA_CACHE_SECONDS:
+            metadata = _api.get_asset_metadata()
+            open_map = {}
+            for category, acts in metadata.items():
+                if not isinstance(acts, dict):
+                    continue
+                for ticker, info in acts.items():
+                    if isinstance(info, dict) and "is_open" in info:
+                        open_map[str(ticker).upper()] = bool(info.get("is_open"))
+            _metadata_cache = {"ts": now, "open_map": open_map}
+        is_open = _metadata_cache["open_map"].get(asset.upper())
+        if is_open is None:
+            return None
+        return "aberto" if is_open else "fechado"
+    except Exception as exc:
+        print(f"[iq] erro get_market_status({asset}): {exc}")
+        return None
 
 
 def _normalize(c: dict) -> dict:

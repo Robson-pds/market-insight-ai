@@ -50,7 +50,10 @@ function switchView(view) {
     loadTradeConfig();
     loadEntries();
   }
-  if (view === "config") loadTradeConfig();
+  if (view === "config") {
+    loadTradeConfig();
+    loadAiConfig();
+  }
   if (view === "relatorio") loadReport();
   if (view === "strategies") loadStrategiesView();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -822,7 +825,10 @@ function showRadarStatus(kind, msg) {
 function hideRadarStatus() { $("radar-status").classList.add("hidden"); }
 
 function renderRadar(d) {
+  const marketRank = (pair) => (pair.market === "fechado" ? 1 : 0);
   const pairs = [...(d.pairs || [])].sort((first, second) => {
+    const marketDifference = marketRank(first) - marketRank(second);
+    if (marketDifference !== 0) return marketDifference;
     const firstRawRate = first.accuracy?.[radarSortExpiry]?.rate;
     const secondRawRate = second.accuracy?.[radarSortExpiry]?.rate;
     const firstRate = firstRawRate === null || firstRawRate === undefined ? -1 : Number(firstRawRate);
@@ -841,7 +847,9 @@ function renderRadar(d) {
   $("sum-call-label").textContent = `CALL (${shortExpiry})`;
   $("sum-neutral-label").textContent = `AGUARDAR (${shortExpiry})`;
   $("sum-put-label").textContent = `PUT (${shortExpiry})`;
-  $("radar-meta").textContent = `${pairs.length} pares · ordenado por assertividade em ${shortExpiry}`;
+  const openCount = pairs.filter((pair) => pair.market === "aberto").length;
+  const closedCount = pairs.filter((pair) => pair.market === "fechado").length;
+  $("radar-meta").textContent = `${pairs.length} pares · ${openCount} abertos · ${closedCount} fechados · ordenado por assertividade em ${shortExpiry}`;
   document.querySelectorAll(".radar-sort").forEach((button) => {
     const active = button.dataset.radarSort === radarSortExpiry;
     button.classList.toggle("active", active);
@@ -859,10 +867,10 @@ function renderRadar(d) {
   pairs.forEach((p) => {
     const signals = p.signals || {};
     const tr = document.createElement("tr");
-    tr.className = `radar-row${p.loading ? " loading" : ""}`;
+    tr.className = `radar-row${p.loading ? " loading" : ""}${p.market === "fechado" ? " closed" : ""}`;
     tr.title = p.error || p.reason || "";
     tr.innerHTML = `
-      <td class="pair">${escapeHtml(p.asset)}${p.error ? `<small>${escapeHtml(p.error)}</small>` : ""}</td>
+      <td class="pair">${escapeHtml(p.asset)}${marketBadge(p.market)}${p.error ? `<small>${escapeHtml(p.error)}</small>` : ""}</td>
       <td>${tfBadge(signals["1min"], p.proximity?.["1min"], p.accuracy?.["1min"], p.loading)}</td>
       <td>${tfBadge(signals["5min"], p.proximity?.["5min"], p.accuracy?.["5min"], p.loading)}</td>
       <td>${tfBadge(signals["15min"], p.proximity?.["15min"], p.accuracy?.["15min"], p.loading)}</td>
@@ -873,6 +881,12 @@ function renderRadar(d) {
     });
     tbody.appendChild(tr);
   });
+}
+
+function marketBadge(market) {
+  if (market === "aberto") return `<span class="mt-badge open" title="Mercado aberto">ABERTO</span>`;
+  if (market === "fechado") return `<span class="mt-badge closed" title="Mercado fechado">FECHADO</span>`;
+  return "";
 }
 
 function tfBadge(signal, proximity, accuracy, loading = false) {
@@ -1512,5 +1526,86 @@ async function saveIndicators() {
 }
 
 $("btn-indicators-save").addEventListener("click", saveIndicators);
+
+/* ============================================================
+   IA — configuração (link, modelo, token, headers adicionais)
+============================================================ */
+$("btn-save-ai-config").addEventListener("click", saveAiConfig);
+$("btn-test-ai").addEventListener("click", testAiConfig);
+
+async function loadAiConfig() {
+  try {
+    const r = await fetch("/api/ai/config");
+    if (!r.ok) throw new Error("Falha ao carregar configuração da IA");
+    renderAiConfig(await r.json());
+  } catch (e) {
+    console.error("Erro ao carregar configuração da IA:", e);
+  }
+}
+
+function renderAiConfig(d) {
+  $("ai-base-url").value = d.base_url || "";
+  $("ai-model").value = d.model || "";
+  $("ai-api-key").value = "";
+  $("ai-headers").value = d.headers || "";
+  if (d.api_key_set) {
+    $("ai-api-key-hint").textContent =
+      `Token salvo (termina em …${d.api_key_tail}). Deixe em branco para mantê-lo ou digite um novo token para substituir.`;
+  } else {
+    $("ai-api-key-hint").textContent = "Vazio = usa OPENAI_API_KEY do .env.";
+  }
+}
+
+function aiFormData() {
+  return {
+    base_url: $("ai-base-url").value.trim(),
+    model: $("ai-model").value.trim(),
+    api_key: $("ai-api-key").value.trim(),
+    headers: $("ai-headers").value.trim(),
+  };
+}
+
+async function saveAiConfig() {
+  const status = $("ai-status");
+  setStatus(status, "loading", "Salvando configuração da IA…");
+  try {
+    const body = aiFormData();
+    if (!body.api_key) delete body.api_key; // campo vazio mantém o token salvo/do .env
+    const r = await fetch("/api/ai/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.message || d.detail || "Falha ao salvar");
+    renderAiConfig(d);
+    setStatus(status, "", d.message);
+    setTimeout(() => status.classList.add("hidden"), 4000);
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  }
+}
+
+async function testAiConfig() {
+  const status = $("ai-status");
+  setStatus(status, "loading", "Testando conexão… (pode levar alguns segundos)");
+  try {
+    const r = await fetch("/api/ai/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(aiFormData()),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Falha ao testar");
+    if (!d.ok) {
+      setStatus(status, "error", `Falha na conexão: ${d.erro}`);
+      return;
+    }
+    setStatus(status, "", `✓ Conectado (${d.modelo} · ${d.base_url}) — resposta: ${d.resposta || "OK"}`);
+    setTimeout(() => status.classList.add("hidden"), 6000);
+  } catch (e) {
+    setStatus(status, "error", e.message);
+  }
+}
 
 boot();

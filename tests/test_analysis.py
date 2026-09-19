@@ -1,5 +1,10 @@
+import os
+import sys
 import unittest
 from unittest.mock import patch
+
+# Permite importar os módulos do app/ sem instalação (layout: app/ + tests/)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app")))
 
 import numpy as np
 import pandas as pd
